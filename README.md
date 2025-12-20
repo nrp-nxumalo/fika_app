@@ -7,7 +7,7 @@ easier than downloading static PDFs from transit websites.
 
 - 🔍 **Searchable Timetables**: Quickly search for a specific route’s schedule.
 - 🔁 **Route Direction Toggle**: Flip between outbound and return directions for any route using a convenient radio button.
-- 🧭 **Cleaner UI**: No more sifting through PDF documents—FigaApp presents the data in a clean and readable format.
+- 🧭 **Cleaner UI**: No more sifting through PDF documents—FikaApp presents the data in a clean and readable format.
 - 🚌 **Current Support**: Currently displays **MyCiTi Bus** timetables.
 - 🛠️ **Coming Soon**: Integration of **Golden Arrow** and **train** schedules.
 
