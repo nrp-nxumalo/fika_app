@@ -1,8 +1,15 @@
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
+const fs = require('fs');
+const path = require('path');
 
-const PORT = 4000;
+const PORT = Number(process.env.PORT) || 4000;
+const SITE_URL = (process.env.SITE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+const CLIENT_BUILD_DIR = path.join(__dirname, 'client', 'build');
+const CLIENT_PUBLIC_DIR = path.join(__dirname, 'client', 'public');
+const INDEX_HTML_PATH = path.join(CLIENT_BUILD_DIR, 'index.html');
+const PUBLIC_INDEX_HTML_PATH = path.join(CLIENT_PUBLIC_DIR, 'index.html');
 
 const app = express();
 app.use(cors());
@@ -33,6 +40,28 @@ const schedulesQuery = `
   WHERE routes.name != ''
   GROUP BY routes.id, routes.name, routes.code, routes.agency
   ORDER BY routes.agency, routes.name, routes.id;
+`;
+
+const routeByIdQuery = `
+  SELECT
+    routes.id,
+    routes.name,
+    routes.code,
+    routes.agency,
+    MAX(CASE WHEN directions.row_num = 1 THEN directions.direction END) AS direction_1,
+    MAX(CASE WHEN directions.row_num = 2 THEN directions.direction END) AS direction_2
+  FROM routes
+  JOIN (
+    SELECT
+      direction,
+      route_id,
+      ROW_NUMBER() OVER (PARTITION BY route_id ORDER BY direction) AS row_num
+    FROM directions
+  ) AS directions ON routes.id = directions.route_id
+  WHERE routes.name != ''
+    AND routes.id = $1
+  GROUP BY routes.id, routes.name, routes.code, routes.agency
+  LIMIT 1;
 `;
 
 const scheduleTimesQuery = `
@@ -104,6 +133,220 @@ function handleQueryError(res, error) {
   res.status(500).json({ error: 'Internal Server Error' });
 }
 
+const AGENCY_DISPLAY_NAMES = {
+  GABS: 'Golden Arrow',
+  MyCiti: 'MyCiTi',
+};
+
+const HOME_TITLE = 'Fika Timetables | Cape Town Bus Timetables';
+const HOME_DESCRIPTION = 'Search Cape Town bus timetables for Golden Arrow and MyCiTi routes. Fika helps commuters find route times quickly, with more South African cities and provinces planned.';
+
+function getAgencyDisplayName(agency) {
+  return AGENCY_DISPLAY_NAMES[agency] || agency;
+}
+
+function slugify(value) {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'route';
+}
+
+function getAgencySlug(agency) {
+  return slugify(agency);
+}
+
+function getRouteLabel(route) {
+  return route.code ? `${route.code} - ${route.name}` : route.name;
+}
+
+function getRouteDirections(route) {
+  return [route.direction_1, route.direction_2].filter(Boolean);
+}
+
+function getCanonicalTimetablePath(route) {
+  return `/timetables/${getAgencySlug(route.agency)}/${route.id}-${slugify(route.name)}`;
+}
+
+function getAbsoluteUrl(urlPath) {
+  return `${SITE_URL}${urlPath}`;
+}
+
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function escapeXml(value) {
+  return escapeHtml(value);
+}
+
+function serializeJsonLd(data) {
+  return JSON.stringify(data).replace(/</g, '\\u003c');
+}
+
+function getHomepageJsonLd() {
+  return [
+    {
+      '@context': 'https://schema.org',
+      '@type': 'WebSite',
+      name: 'Fika Timetables',
+      url: SITE_URL,
+      description: HOME_DESCRIPTION,
+      potentialAction: {
+        '@type': 'SearchAction',
+        target: `${SITE_URL}/?q={search_term_string}`,
+        'query-input': 'required name=search_term_string',
+      },
+    },
+  ];
+}
+
+function getTimetableJsonLd(route, canonicalPath) {
+  const routeLabel = getRouteLabel(route);
+  const agencyName = getAgencyDisplayName(route.agency);
+  const canonicalUrl = getAbsoluteUrl(canonicalPath);
+
+  return [
+    {
+      '@context': 'https://schema.org',
+      '@type': 'WebPage',
+      name: `${routeLabel} Timetable | Fika`,
+      url: canonicalUrl,
+      description: getTimetableDescription(route),
+      isPartOf: {
+        '@type': 'WebSite',
+        name: 'Fika Timetables',
+        url: SITE_URL,
+      },
+    },
+    {
+      '@context': 'https://schema.org',
+      '@type': 'BreadcrumbList',
+      itemListElement: [
+        {
+          '@type': 'ListItem',
+          position: 1,
+          name: 'Fika Timetables',
+          item: SITE_URL,
+        },
+        {
+          '@type': 'ListItem',
+          position: 2,
+          name: agencyName,
+          item: canonicalUrl,
+        },
+        {
+          '@type': 'ListItem',
+          position: 3,
+          name: routeLabel,
+          item: canonicalUrl,
+        },
+      ],
+    },
+    {
+      '@context': 'https://schema.org',
+      '@type': 'Dataset',
+      name: `${agencyName} ${routeLabel} bus timetable`,
+      description: getTimetableDescription(route),
+      url: canonicalUrl,
+      spatialCoverage: {
+        '@type': 'Place',
+        name: 'Cape Town, South Africa',
+      },
+      provider: {
+        '@type': 'Organization',
+        name: agencyName,
+      },
+      includedInDataCatalog: {
+        '@type': 'DataCatalog',
+        name: 'Fika Timetables',
+        url: SITE_URL,
+      },
+    },
+  ];
+}
+
+function getTimetableDescription(route) {
+  const agencyName = getAgencyDisplayName(route.agency);
+  const routeLabel = getRouteLabel(route);
+  const directions = getRouteDirections(route);
+  const directionText = directions.length
+    ? `, including trips to ${directions.join(' and ')}`
+    : '';
+
+  return `View the ${agencyName} ${routeLabel} bus timetable in Cape Town${directionText}. Find route times quickly on Fika.`;
+}
+
+function getHomepageSeo() {
+  return {
+    title: HOME_TITLE,
+    description: HOME_DESCRIPTION,
+    canonicalUrl: SITE_URL,
+    jsonLd: getHomepageJsonLd(),
+  };
+}
+
+function getTimetableSeo(route) {
+  const canonicalPath = getCanonicalTimetablePath(route);
+  const agencyName = getAgencyDisplayName(route.agency);
+  const routeLabel = getRouteLabel(route);
+
+  return {
+    title: `${agencyName} ${routeLabel} Timetable | Fika`,
+    description: getTimetableDescription(route),
+    canonicalUrl: getAbsoluteUrl(canonicalPath),
+    jsonLd: getTimetableJsonLd(route, canonicalPath),
+  };
+}
+
+function getIndexHtml() {
+  const indexPath = fs.existsSync(INDEX_HTML_PATH) ? INDEX_HTML_PATH : PUBLIC_INDEX_HTML_PATH;
+  return fs.readFileSync(indexPath, 'utf8');
+}
+
+function replaceOrInsertHeadTag(html, pattern, tag) {
+  if (pattern.test(html)) {
+    return html.replace(pattern, tag);
+  }
+
+  return html.replace('</head>', `    ${tag}\n  </head>`);
+}
+
+function renderIndexHtml(seo) {
+  let html = getIndexHtml();
+  const title = escapeHtml(seo.title);
+  const description = escapeHtml(seo.description);
+  const canonicalUrl = escapeHtml(seo.canonicalUrl);
+  const jsonLd = serializeJsonLd(seo.jsonLd);
+
+  html = replaceOrInsertHeadTag(html, /<title[^>]*>.*?<\/title>/i, `<title>${title}</title>`);
+  html = replaceOrInsertHeadTag(html, /<meta\s+name="description"[^>]*>/i, `<meta name="description" content="${description}" />`);
+  html = replaceOrInsertHeadTag(html, /<link\s+rel="canonical"[^>]*>/i, `<link rel="canonical" href="${canonicalUrl}" />`);
+  html = replaceOrInsertHeadTag(html, /<meta\s+property="og:title"[^>]*>/i, `<meta property="og:title" content="${title}" />`);
+  html = replaceOrInsertHeadTag(html, /<meta\s+property="og:description"[^>]*>/i, `<meta property="og:description" content="${description}" />`);
+  html = replaceOrInsertHeadTag(html, /<meta\s+property="og:url"[^>]*>/i, `<meta property="og:url" content="${canonicalUrl}" />`);
+  html = replaceOrInsertHeadTag(html, /<meta\s+property="og:type"[^>]*>/i, '<meta property="og:type" content="website" />');
+  html = replaceOrInsertHeadTag(html, /<meta\s+name="twitter:card"[^>]*>/i, '<meta name="twitter:card" content="summary" />');
+  html = replaceOrInsertHeadTag(html, /<meta\s+name="twitter:title"[^>]*>/i, `<meta name="twitter:title" content="${title}" />`);
+  html = replaceOrInsertHeadTag(html, /<meta\s+name="twitter:description"[^>]*>/i, `<meta name="twitter:description" content="${description}" />`);
+  html = replaceOrInsertHeadTag(html, /<script\s+id="seo-jsonld"[^>]*>[\s\S]*?<\/script>/i, `<script id="seo-jsonld" type="application/ld+json">${jsonLd}</script>`);
+
+  return html;
+}
+
+async function getRouteById(routeId) {
+  const { rows } = await pool.query(routeByIdQuery, [routeId]);
+  return rows[0];
+}
+
 app.get('/schedules', async (req, res) => {
   try {
     const { rows } = await pool.query(schedulesQuery);
@@ -122,6 +365,82 @@ app.get('/schedule_times/:id', async (req, res) => {
   } catch (error) {
     handleQueryError(res, error);
   }
+});
+
+app.get('/sitemap.xml', async (req, res) => {
+  try {
+    const { rows } = await pool.query(schedulesQuery);
+    const urls = [
+      {
+        loc: SITE_URL,
+        priority: '1.0',
+      },
+      ...rows.map((route) => ({
+        loc: getAbsoluteUrl(getCanonicalTimetablePath(route)),
+        priority: '0.8',
+      })),
+    ];
+
+    const sitemap = `<?xml version="1.0" encoding="UTF-8"?>\n` +
+      `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
+      urls.map((url) => (
+        `  <url>\n` +
+        `    <loc>${escapeXml(url.loc)}</loc>\n` +
+        `    <changefreq>weekly</changefreq>\n` +
+        `    <priority>${url.priority}</priority>\n` +
+        `  </url>`
+      )).join('\n') +
+      `\n</urlset>\n`;
+
+    res.type('application/xml').send(sitemap);
+  } catch (error) {
+    console.error('Error generating sitemap', error);
+    res.status(500).type('text/plain').send('Unable to generate sitemap');
+  }
+});
+
+app.get('/robots.txt', (req, res) => {
+  res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: ${SITE_URL}/sitemap.xml\n`);
+});
+
+app.get('/', (req, res) => {
+  res.send(renderIndexHtml(getHomepageSeo()));
+});
+
+app.get('/timetables/:agency/:routeSlug', async (req, res) => {
+  const routeIdMatch = req.params.routeSlug.match(/^(\d+)(?:-|$)/);
+
+  if (!routeIdMatch) {
+    res.status(404).send(renderIndexHtml(getHomepageSeo()));
+    return;
+  }
+
+  try {
+    const route = await getRouteById(routeIdMatch[1]);
+
+    if (!route) {
+      res.status(404).send(renderIndexHtml(getHomepageSeo()));
+      return;
+    }
+
+    const canonicalPath = getCanonicalTimetablePath(route);
+
+    if (req.path !== canonicalPath) {
+      res.redirect(301, canonicalPath);
+      return;
+    }
+
+    res.send(renderIndexHtml(getTimetableSeo(route)));
+  } catch (error) {
+    console.error('Error rendering timetable route', error);
+    res.status(500).send(renderIndexHtml(getHomepageSeo()));
+  }
+});
+
+app.use(express.static(CLIENT_BUILD_DIR, { index: false }));
+
+app.get('*', (req, res) => {
+  res.send(renderIndexHtml(getHomepageSeo()));
 });
 
 app.listen(PORT, () => {

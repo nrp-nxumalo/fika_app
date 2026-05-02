@@ -29,9 +29,93 @@ const AGENCY_DISPLAY_NAMES = {
   MyCiti: 'MyCiTi',
 };
 
-const API_BASE_URL = 'http://localhost:4000';
+const LOCAL_API_BASE_URL = 'http://localhost:4000';
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL ||
+  (process.env.NODE_ENV === 'production' ? '' : LOCAL_API_BASE_URL);
 
 const getAgencyDisplayName = (agency) => AGENCY_DISPLAY_NAMES[agency] || agency;
+
+const slugify = (value) => {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'route';
+};
+
+const getAgencySlug = (agency) => slugify(agency);
+
+const getTimetablePath = (route) => {
+  if (!route) {
+    return '/';
+  }
+
+  return `/timetables/${getAgencySlug(route.agency)}/${route.id}-${slugify(route.name)}`;
+};
+
+const getRouteIdFromPath = (pathname) => {
+  const match = pathname.match(/^\/timetables\/[^/]+\/(\d+)(?:-|$)/);
+  return match ? Number(match[1]) : null;
+};
+
+const getInitialRouteId = () => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  return getRouteIdFromPath(window.location.pathname);
+};
+
+const updateBrowserPath = (nextPath, replace = false) => {
+  if (typeof window === 'undefined' || window.location.pathname === nextPath) {
+    return;
+  }
+
+  const method = replace ? 'replaceState' : 'pushState';
+  window.history[method]({}, '', nextPath);
+};
+
+const isLocalBrowserHost = () => {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  return ['localhost', '127.0.0.1'].includes(window.location.hostname);
+};
+
+const fetchApiJson = async (endpoint, errorMessage) => {
+  const fetchJson = async (baseUrl) => {
+    const response = await fetch(`${baseUrl}${endpoint}`);
+    const contentType = response.headers.get('content-type') || '';
+
+    if (!response.ok) {
+      throw new Error(errorMessage);
+    }
+
+    if (!contentType.includes('application/json')) {
+      throw new Error(`${errorMessage}: expected JSON but received ${contentType || 'an unknown response type'}`);
+    }
+
+    return response.json();
+  };
+
+  try {
+    return await fetchJson(API_BASE_URL);
+  } catch (error) {
+    const canTryLocalApi = !process.env.REACT_APP_API_BASE_URL &&
+      API_BASE_URL === '' &&
+      isLocalBrowserHost() &&
+      window.location.port !== '4000';
+
+    if (canTryLocalApi) {
+      return fetchJson(LOCAL_API_BASE_URL);
+    }
+
+    throw error;
+  }
+};
 
 const getRouteCountLabel = (count) => {
   if (!count) {
@@ -207,6 +291,38 @@ function App() {
   const [hasOpenedTimetableView, setHasOpenedTimetableView] = useState(false);
   const [timetableMessage, setTimetableMessage] = useState('');
   const [routeSavedOffline, setRouteSavedOffline] = useState(false);
+  const [requestedRouteId, setRequestedRouteId] = useState(getInitialRouteId);
+
+  const clearTimetableSelection = ({ showWorkspace = false, message = '' } = {}) => {
+    setRoute(null);
+    setScheduleData(null);
+    setScheduleRows(null);
+    setSelectedDirection('');
+    setSelectedServiceDay('');
+    setMobileFilterSheet(null);
+    setRouteSavedOffline(false);
+    setTimetableMessage(message);
+    setHasOpenedTimetableView(showWorkspace);
+  };
+
+  const selectRoute = (selectedRoute, { updateUrl = true, replaceUrl = false } = {}) => {
+    if (!selectedRoute) {
+      return;
+    }
+
+    setRequestedRouteId(Number(selectedRoute.id));
+    setRoute(selectedRoute);
+    setSelectedAgency(selectedRoute.agency);
+    setSelectedDirection(getRouteDirections(selectedRoute)[0] || '');
+    setSelectedServiceDay('');
+    setMobileFilterSheet(null);
+    setTimetableMessage('');
+    setHasOpenedTimetableView(true);
+
+    if (updateUrl) {
+      updateBrowserPath(getTimetablePath(selectedRoute), replaceUrl);
+    }
+  };
 
   useEffect(() => {
     let ignore = false;
@@ -225,13 +341,7 @@ function App() {
       }
 
       try {
-        const response = await fetch(`${API_BASE_URL}/schedules`);
-
-        if (!response.ok) {
-          throw new Error('Unable to fetch schedules');
-        }
-
-        const data = await response.json();
+        const data = await fetchApiJson('/schedules', 'Unable to fetch schedules');
 
         if (ignore) {
           return;
@@ -257,31 +367,67 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const handlePopState = () => {
+      const nextRouteId = getRouteIdFromPath(window.location.pathname);
+      setRequestedRouteId(nextRouteId);
+
+      if (!nextRouteId) {
+        clearTimetableSelection();
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!requestedRouteId || !schedules.length) {
+      return;
+    }
+
+    const requestedRoute = schedules.find((schedule) => Number(schedule.id) === requestedRouteId);
+
+    if (requestedRoute) {
+      if (Number(route?.id) !== Number(requestedRoute.id)) {
+        selectRoute(requestedRoute, { updateUrl: true, replaceUrl: true });
+      } else {
+        updateBrowserPath(getTimetablePath(requestedRoute), true);
+      }
+
+      return;
+    }
+
+    if (!loadingSchedules) {
+      clearTimetableSelection({
+        showWorkspace: true,
+        message: 'This timetable could not be found. Select a route to view an available timetable.',
+      });
+    }
+  }, [loadingSchedules, requestedRouteId, route, schedules]);
+
+  useEffect(() => {
     if (route) {
       setHasOpenedTimetableView(true);
     }
   }, [route]);
 
   const handleAgencyChange = (agency) => {
+    const shouldStayInWorkspace = hasOpenedTimetableView || route;
+
+    setRequestedRouteId(null);
     setSelectedAgency(agency);
-    setRoute(null);
-    setScheduleData(null);
-    setScheduleRows(null);
-    setSelectedDirection('');
-    setSelectedServiceDay('');
-    setMobileFilterSheet(null);
-    setRouteSavedOffline(false);
-    setTimetableMessage('Select a route to view its timetable.');
+    clearTimetableSelection({
+      showWorkspace: shouldStayInWorkspace,
+      message: 'Select a route to view its timetable.',
+    });
+    updateBrowserPath('/');
   };
 
   const handleRouteSelect = (selectedRoute) => {
-    setRoute(selectedRoute);
-    setSelectedAgency(selectedRoute.agency);
-    setSelectedDirection(getRouteDirections(selectedRoute)[0] || '');
-    setSelectedServiceDay('');
-    setMobileFilterSheet(null);
-    setTimetableMessage('');
-    setHasOpenedTimetableView(true);
+    selectRoute(selectedRoute);
   };
 
   useEffect(() => {
@@ -316,13 +462,7 @@ function App() {
           setLoadingTimes(true);
         }
 
-        const response = await fetch(`${API_BASE_URL}/schedule_times/${route.id}`);
-
-        if (!response.ok) {
-          throw new Error('Unable to fetch timetable');
-        }
-
-        const data = await response.json();
+        const data = await fetchApiJson(`/schedule_times/${route.id}`, 'Unable to fetch timetable');
         const groupedData = groupBy(data, 'direction_name');
 
         if (ignore) {
