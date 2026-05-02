@@ -20,7 +20,7 @@ function DirectionRadioButton({ route, setSelectedDirection, selectedDirection }
                 onChange={handleOptionChange}
               />
             <label htmlFor="direction_1">
-              To {route.direction_1}
+              {route.direction_1}
             </label>
               <input
                 id="direction_2"
@@ -30,7 +30,7 @@ function DirectionRadioButton({ route, setSelectedDirection, selectedDirection }
                 onChange={handleOptionChange}
               />
               <label htmlFor="direction_2">
-              To {route.direction_2}
+              {route.direction_2}
             </label>
           </div>
         </fieldset>
@@ -48,7 +48,7 @@ function DirectionRadioButton({ route, setSelectedDirection, selectedDirection }
               readOnly
             />
             <label htmlFor="direction_single">
-              To {singleDirection}
+              {singleDirection}
             </label>
           </div>
         </fieldset>

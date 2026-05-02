@@ -29,7 +29,8 @@ const AGENCY_DISPLAY_NAMES = {
   MyCiti: 'MyCiTi',
 };
 
-const LOCAL_API_BASE_URL = 'http://localhost:4000';
+const LOCAL_API_PORT = '4000';
+const LOCAL_API_BASE_URL = `http://localhost:${LOCAL_API_PORT}`;
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL ||
   (process.env.NODE_ENV === 'production' ? '' : LOCAL_API_BASE_URL);
 
@@ -77,12 +78,12 @@ const updateBrowserPath = (nextPath, replace = false) => {
   window.history[method]({}, '', nextPath);
 };
 
-const isLocalBrowserHost = () => {
+const getCurrentHostApiBaseUrl = () => {
   if (typeof window === 'undefined') {
-    return false;
+    return LOCAL_API_BASE_URL;
   }
 
-  return ['localhost', '127.0.0.1'].includes(window.location.hostname);
+  return `${window.location.protocol}//${window.location.hostname}:${LOCAL_API_PORT}`;
 };
 
 const fetchApiJson = async (endpoint, errorMessage) => {
@@ -104,13 +105,13 @@ const fetchApiJson = async (endpoint, errorMessage) => {
   try {
     return await fetchJson(API_BASE_URL);
   } catch (error) {
-    const canTryLocalApi = !process.env.REACT_APP_API_BASE_URL &&
+    const canTryCurrentHostApi = !process.env.REACT_APP_API_BASE_URL &&
       API_BASE_URL === '' &&
-      isLocalBrowserHost() &&
-      window.location.port !== '4000';
+      typeof window !== 'undefined' &&
+      window.location.port !== LOCAL_API_PORT;
 
-    if (canTryLocalApi) {
-      return fetchJson(LOCAL_API_BASE_URL);
+    if (canTryCurrentHostApi) {
+      return fetchJson(getCurrentHostApiBaseUrl());
     }
 
     throw error;
@@ -141,6 +142,29 @@ const groupBy = (array, key) => {
 
 const getRouteDirections = (route) => {
   return [route?.direction_1, route?.direction_2].filter(Boolean);
+};
+
+const normalizeDirectionLabel = (direction) => {
+  if (!direction) {
+    return direction;
+  }
+
+  return String(direction).replace(/^to\s+/i, '').trim();
+};
+
+const normalizeScheduleRoutes = (routes) => {
+  return (routes || []).map((schedule) => ({
+    ...schedule,
+    direction_1: normalizeDirectionLabel(schedule.direction_1),
+    direction_2: normalizeDirectionLabel(schedule.direction_2),
+  }));
+};
+
+const normalizeTimetableRows = (rows) => {
+  return (rows || []).map((row) => ({
+    ...row,
+    direction_name: normalizeDirectionLabel(row.direction_name),
+  }));
 };
 
 const getAvailableServiceDays = (scheduleData, selectedDirection) => {
@@ -331,8 +355,10 @@ function App() {
       const cachedSchedules = await getCachedSchedules();
 
       if (!ignore && cachedSchedules?.data?.length) {
-        setSchedules(cachedSchedules.data);
-        setSelectedAgency((currentAgency) => currentAgency || cachedSchedules.data[0]?.agency || '');
+        const cachedScheduleData = normalizeScheduleRoutes(cachedSchedules.data);
+
+        setSchedules(cachedScheduleData);
+        setSelectedAgency((currentAgency) => currentAgency || cachedScheduleData[0]?.agency || '');
         setLoadingSchedules(false);
       }
 
@@ -341,7 +367,7 @@ function App() {
       }
 
       try {
-        const data = await fetchApiJson('/schedules', 'Unable to fetch schedules');
+        const data = normalizeScheduleRoutes(await fetchApiJson('/schedules', 'Unable to fetch schedules'));
 
         if (ignore) {
           return;
@@ -443,8 +469,10 @@ function App() {
       setRouteSavedOffline(Boolean(cachedTimetable?.saved));
 
       if (cachedTimetable?.data?.length) {
-        setScheduleRows(cachedTimetable.data);
-        setScheduleData(groupBy(cachedTimetable.data, 'direction_name'));
+        const cachedTimetableData = normalizeTimetableRows(cachedTimetable.data);
+
+        setScheduleRows(cachedTimetableData);
+        setScheduleData(groupBy(cachedTimetableData, 'direction_name'));
         setLoadingTimes(false);
         setTimetableMessage('');
         await touchTimetable(route.id);
@@ -462,7 +490,9 @@ function App() {
           setLoadingTimes(true);
         }
 
-        const data = await fetchApiJson(`/schedule_times/${route.id}`, 'Unable to fetch timetable');
+        const data = normalizeTimetableRows(
+          await fetchApiJson(`/schedule_times/${route.id}`, 'Unable to fetch timetable')
+        );
         const groupedData = groupBy(data, 'direction_name');
 
         if (ignore) {

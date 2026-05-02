@@ -237,7 +237,7 @@ code {
 
 .landing-schedule-picker .agency-select,
 .landing-schedule-picker .dropdown input {
-  font-size: 15px;
+  font-size: 16px;
   height: 48px;
 }
 
@@ -401,6 +401,11 @@ code {
   border-radius: 6px;
   font-size: 13px;
   min-height: 40px;
+}
+
+.agency-select,
+.dropdown input {
+  font-size: 16px;
 }
 
 .agency-select {
@@ -948,7 +953,7 @@ input:checked + label {
 
   .landing-schedule-picker .agency-select,
   .landing-schedule-picker .dropdown input {
-    font-size: 13px;
+    font-size: 16px;
     height: 42px;
   }
 
@@ -993,7 +998,7 @@ input:checked + label {
 
   .agency-select,
   .dropdown input {
-    font-size: 12px;
+    font-size: 16px;
     height: 36px;
     min-height: 36px;
     padding: 0 10px;
@@ -1075,14 +1080,16 @@ input:checked + label {
   }
 
   .route-title h1 {
+    display: -webkit-box;
     flex: 1;
     font-size: 18px;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
   }
 
   .save-offline-toggle {
+    flex: 0 0 auto;
     font-size: 11px;
     min-height: 30px;
     padding: 0 8px;
