@@ -1,25 +1,82 @@
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
+const compression = require('compression');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const fs = require('fs');
 const path = require('path');
 
 const PORT = Number(process.env.PORT) || 4000;
 const SITE_URL = (process.env.SITE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const ADSENSE_PUBLISHER_ID = process.env.ADSENSE_PUBLISHER_ID || '';
 const CLIENT_BUILD_DIR = path.join(__dirname, 'client', 'build');
 const CLIENT_PUBLIC_DIR = path.join(__dirname, 'client', 'public');
 const INDEX_HTML_PATH = path.join(CLIENT_BUILD_DIR, 'index.html');
 const PUBLIC_INDEX_HTML_PATH = path.join(CLIENT_PUBLIC_DIR, 'index.html');
 
 const app = express();
-app.use(cors());
+if (IS_PRODUCTION) {
+  app.set('trust proxy', 1);
+}
 
-const pool = new Pool({
+const localPoolConfig = {
   user: 'njabulonxumalo',
   host: 'localhost',
   database: 'fika',
   port: 5432,
+};
+
+const pool = new Pool(process.env.DATABASE_URL ? {
+  connectionString: process.env.DATABASE_URL,
+  ssl: IS_PRODUCTION ? { rejectUnauthorized: false } : undefined,
+} : localPoolConfig);
+
+const siteOrigin = new URL(SITE_URL).origin;
+const developmentOrigins = new Set([
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  `http://localhost:${PORT}`,
+  `http://127.0.0.1:${PORT}`,
+]);
+const allowedOrigins = new Set([siteOrigin, ...developmentOrigins]);
+
+app.use(compression());
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      baseUri: ["'self'"],
+      connectSrc: ["'self'", 'https://*.google.com', 'https://*.google-analytics.com'],
+      fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+      frameSrc: ["'self'", 'https://googleads.g.doubleclick.net', 'https://tpc.googlesyndication.com'],
+      imgSrc: ["'self'", 'data:', 'https://*.google.com', 'https://*.googleusercontent.com', 'https://*.googlesyndication.com', 'https://*.doubleclick.net'],
+      objectSrc: ["'none'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", 'https://pagead2.googlesyndication.com', 'https://fundingchoicesmessages.google.com'],
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      upgradeInsecureRequests: IS_PRODUCTION ? [] : null,
+    },
+  },
+}));
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || !IS_PRODUCTION || allowedOrigins.has(origin)) {
+      callback(null, true);
+      return;
+    }
+
+    callback(new Error('Not allowed by CORS'));
+  },
+}));
+
+const publicApiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
 });
+app.use(['/schedules', '/schedule_times', '/sitemap.xml'], publicApiLimiter);
 
 const schedulesQuery = `
   SELECT
@@ -140,6 +197,24 @@ const AGENCY_DISPLAY_NAMES = {
 
 const HOME_TITLE = 'Fika Timetables | Cape Town Bus Timetables';
 const HOME_DESCRIPTION = 'Search Cape Town bus timetables for Golden Arrow and MyCiTi routes. Fika helps commuters find route times quickly, with more South African cities and provinces planned.';
+const INFO_PAGES = {
+  '/about': {
+    title: 'About Fika Timetables | Cape Town Bus Timetables',
+    description: 'Learn about Fika Timetables, a simple way to search Golden Arrow and MyCiTi bus timetables for Cape Town commuters.',
+  },
+  '/contact': {
+    title: 'Contact Fika Timetables',
+    description: 'Contact Fika Timetables for timetable feedback, data questions, and site enquiries.',
+  },
+  '/privacy-policy': {
+    title: 'Privacy Policy | Fika Timetables',
+    description: 'Read how Fika Timetables handles local offline timetable caching, analytics, cookies, and future advertising disclosures.',
+  },
+  '/terms': {
+    title: 'Terms and Disclaimer | Fika Timetables',
+    description: 'Review the Fika Timetables terms, timetable accuracy disclaimer, and acceptable use guidance.',
+  },
+};
 
 function getAgencyDisplayName(agency) {
   return AGENCY_DISPLAY_NAMES[agency] || agency;
@@ -294,6 +369,30 @@ function getHomepageSeo() {
   };
 }
 
+function getInfoPageSeo(pagePath) {
+  const page = INFO_PAGES[pagePath] || INFO_PAGES['/about'];
+
+  return {
+    title: page.title,
+    description: page.description,
+    canonicalUrl: getAbsoluteUrl(pagePath),
+    jsonLd: [
+      {
+        '@context': 'https://schema.org',
+        '@type': 'WebPage',
+        name: page.title,
+        url: getAbsoluteUrl(pagePath),
+        description: page.description,
+        isPartOf: {
+          '@type': 'WebSite',
+          name: 'Fika Timetables',
+          url: SITE_URL,
+        },
+      },
+    ],
+  };
+}
+
 function getTimetableSeo(route) {
   const canonicalPath = getCanonicalTimetablePath(route);
   const agencyName = getAgencyDisplayName(route.agency);
@@ -359,11 +458,30 @@ app.get('/schedules', async (req, res) => {
 app.get('/schedule_times/:id', async (req, res) => {
   const { id } = req.params;
 
+  if (!/^\d+$/.test(id)) {
+    res.status(400).json({ error: 'Route id must be numeric' });
+    return;
+  }
+
   try {
     const { rows } = await pool.query(scheduleTimesQuery, [id]);
     res.json(rows);
   } catch (error) {
     handleQueryError(res, error);
+  }
+});
+
+app.get('/healthz', (req, res) => {
+  res.json({ ok: true });
+});
+
+app.get('/healthz/db', async (req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('Database health check failed', error);
+    res.status(503).json({ ok: false });
   }
 });
 
@@ -403,8 +521,22 @@ app.get('/robots.txt', (req, res) => {
   res.type('text/plain').send(`User-agent: *\nAllow: /\nSitemap: ${SITE_URL}/sitemap.xml\n`);
 });
 
+app.get('/ads.txt', (req, res) => {
+  const adsTxt = ADSENSE_PUBLISHER_ID
+    ? `google.com, ${ADSENSE_PUBLISHER_ID}, DIRECT, f08c47fec0942fa0\n`
+    : '# AdSense publisher id pending. Set ADSENSE_PUBLISHER_ID to enable ads.txt.\n';
+
+  res.type('text/plain').send(adsTxt);
+});
+
 app.get('/', (req, res) => {
   res.send(renderIndexHtml(getHomepageSeo()));
+});
+
+Object.keys(INFO_PAGES).forEach((pagePath) => {
+  app.get(pagePath, (req, res) => {
+    res.send(renderIndexHtml(getInfoPageSeo(pagePath)));
+  });
 });
 
 app.get('/timetables/:agency/:routeSlug', async (req, res) => {
@@ -444,5 +576,5 @@ app.get('*', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Server is running on http://localhost:${PORT}`);
+  console.log(`Fika server listening on port ${PORT}`);
 });
