@@ -2,6 +2,10 @@
   "name": "fika_web_app",
   "version": "1.0.0",
   "main": "index.js",
+  "engines": {
+    "node": "20.x",
+    "npm": "10.x"
+  },
   "scripts": {
     "build": "npm ci --prefix client && npm run build --prefix client",
     "dev": "node server.js",
