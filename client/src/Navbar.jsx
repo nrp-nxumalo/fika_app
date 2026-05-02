@@ -7,6 +7,12 @@ export default function Navbar() {
                 <li className="navItem">
                     <a href="/" className="navLink">FIKA</a>
                 </li>
+                <li className="navItem navItemSecondary">
+                    <a href="/about" className="navSecondaryLink">About</a>
+                </li>
+                <li className="navItem navItemSecondary">
+                    <a href="/contact" className="navSecondaryLink">Contact</a>
+                </li>
             </ul>
         </nav>
     );

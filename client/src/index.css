@@ -117,14 +117,16 @@ code {
 }
 
 .navList {
+  align-items: center;
   display: flex;
+  gap: 16px;
   list-style-type: none;
   margin: 0;
   padding: 0;
 }
 
 .navItem {
-  margin-right: 15px;
+  margin: 0;
 }
 
 .navLink {
@@ -134,6 +136,22 @@ code {
   font-weight: 700;
   letter-spacing: .04em;
   text-decoration: none;
+}
+
+.navItemSecondary {
+  display: flex;
+}
+
+.navSecondaryLink {
+  color: rgba(255, 255, 255, .82);
+  font-size: 13px;
+  font-weight: 800;
+  text-decoration: none;
+  text-transform: uppercase;
+}
+
+.navSecondaryLink:hover {
+  color: #fff;
 }
 
 .container {
@@ -149,7 +167,7 @@ code {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 28px 20px 36px;
+  padding: 28px 20px 22px;
 }
 
 .landing-hero,
@@ -364,13 +382,78 @@ code {
 }
 
 .timetable-ad-rail {
+  display: flex;
   min-height: 0;
 }
 
 .ad-slot-rail {
-  min-height: 280px;
+  flex: 1;
+  min-height: min(680px, calc(100vh - 130px));
   position: sticky;
   top: 16px;
+}
+
+.site-footer {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 12px 18px;
+  justify-content: center;
+  padding: 14px 20px 18px;
+}
+
+.site-footer a {
+  color: var(--color-muted-strong);
+  font-size: 12px;
+  font-weight: 800;
+  text-decoration: none;
+  text-transform: uppercase;
+}
+
+.site-footer a:hover {
+  color: var(--color-brand);
+}
+
+.info-page {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 28px 20px 0;
+}
+
+.info-panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  box-shadow: var(--shadow-card);
+  margin: 0 auto;
+  max-width: 820px;
+  padding: 28px;
+}
+
+.info-eyebrow {
+  color: var(--color-accent);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: .08em;
+  margin: 0 0 10px;
+  text-transform: uppercase;
+}
+
+.info-panel h1 {
+  color: var(--color-heading);
+  font-family: "Oswald", Arial, sans-serif;
+  font-size: 42px;
+  line-height: 1;
+  margin: 0 0 18px;
+}
+
+.info-panel p:not(.info-eyebrow) {
+  color: var(--color-muted);
+  font-size: 16px;
+  line-height: 1.65;
+  margin: 0 0 14px;
 }
 
 .side-bar {
@@ -916,8 +999,16 @@ input:checked + label {
     padding: 8px 14px;
   }
 
+  .navList {
+    gap: 12px;
+  }
+
   .navLink {
     font-size: 18px;
+  }
+
+  .navSecondaryLink {
+    font-size: 11px;
   }
 
   .container {
@@ -926,6 +1017,23 @@ input:checked + label {
 
   .landing {
     padding: 18px 14px 28px;
+  }
+
+  .info-page {
+    padding: 18px 14px 0;
+  }
+
+  .info-panel {
+    padding: 18px;
+  }
+
+  .info-panel h1 {
+    font-size: 34px;
+  }
+
+  .site-footer {
+    justify-content: flex-start;
+    padding: 12px 14px 16px;
   }
 
   .landing-hero {
