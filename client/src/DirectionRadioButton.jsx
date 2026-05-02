@@ -1,16 +1,17 @@
 function DirectionRadioButton({ route, setSelectedDirection, selectedDirection }) {
-  
+  const directions = [route?.direction_1, route?.direction_2].filter(Boolean);
+  const singleDirection = directions[0];
 
   const handleOptionChange = (event) => {
     setSelectedDirection(event.target.value);
   };
 
   return (
-      (route?.direction_1 && route?.direction_2) !== undefined ? (
+    directions.length > 1 ? (
       <div className="direction-toggle-container">
         <label className="direction-toggle-label">Select Direction</label>
         <fieldset className="direction-toggle">
-          <div class="toggle">
+          <div className="toggle">
               <input
                 id="direction_1"
                 type="radio"
@@ -18,8 +19,8 @@ function DirectionRadioButton({ route, setSelectedDirection, selectedDirection }
                 checked={selectedDirection === route.direction_1}
                 onChange={handleOptionChange}
               />
-            <label for="direction_1">
-              {route.direction_1}
+            <label htmlFor="direction_1">
+              To {route.direction_1}
             </label>
               <input
                 id="direction_2"
@@ -28,13 +29,31 @@ function DirectionRadioButton({ route, setSelectedDirection, selectedDirection }
                 checked={selectedDirection === route.direction_2}
                 onChange={handleOptionChange}
               />
-              <label for="direction_2">
-              {route.direction_2}
+              <label htmlFor="direction_2">
+              To {route.direction_2}
             </label>
           </div>
         </fieldset>
       </div>
-    ) : <div><p>{route?.direction_1 ? route?.direction_1 : route?.direction_2 }</p></div>
+    ) : (
+      <div className="direction-toggle-container">
+        <label className="direction-toggle-label">Direction</label>
+        <fieldset className="direction-toggle">
+          <div className="toggle single-direction-toggle">
+            <input
+              id="direction_single"
+              type="radio"
+              value={singleDirection}
+              checked
+              readOnly
+            />
+            <label htmlFor="direction_single">
+              To {singleDirection}
+            </label>
+          </div>
+        </fieldset>
+      </div>
+    )
   );
 }
 

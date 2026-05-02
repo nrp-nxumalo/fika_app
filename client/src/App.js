@@ -3,90 +3,570 @@ import SchedulesDropdown from './SchedulesDropdown';
 import ScheduleTable from './ScheduleTable';
 import DirectionRadioButton from './DirectionRadioButton';
 import Navbar from './Navbar';
+import {
+  getCachedSchedules,
+  getCachedTimetable,
+  isCacheStale,
+  saveSchedulesToCache,
+  saveTimetableToCache,
+  setTimetableSaved,
+  touchTimetable,
+} from './timetableCache';
+
+const SERVICE_DAYS = [
+  { key: 'monday', label: 'Monday' },
+  { key: 'tuesday', label: 'Tuesday' },
+  { key: 'wednesday', label: 'Wednesday' },
+  { key: 'thursday', label: 'Thursday' },
+  { key: 'friday', label: 'Friday' },
+  { key: 'saturday', label: 'Saturday' },
+  { key: 'sunday', label: 'Sunday' },
+  { key: 'public_holiday', label: 'Public Holiday' },
+];
+
+const AGENCY_DISPLAY_NAMES = {
+  GABS: 'Golden Arrow',
+  MyCiti: 'MyCiTi',
+};
+
+const API_BASE_URL = 'http://localhost:4000';
+
+const getAgencyDisplayName = (agency) => AGENCY_DISPLAY_NAMES[agency] || agency;
+
+const getRouteCountLabel = (count) => {
+  if (!count) {
+    return 'Route timetables';
+  }
+
+  return `${count} route timetable${count === 1 ? '' : 's'}`;
+};
+
+const groupBy = (array, key) => {
+  return array.reduce((result, currentValue) => {
+    const keyValue = currentValue[key];
+
+    if (!result[keyValue]) {
+      result[keyValue] = [];
+    }
+
+    result[keyValue].push(currentValue);
+
+    return result;
+  }, {});
+};
+
+const getRouteDirections = (route) => {
+  return [route?.direction_1, route?.direction_2].filter(Boolean);
+};
+
+const getAvailableServiceDays = (scheduleData, selectedDirection) => {
+  if (!scheduleData) {
+    return [];
+  }
+
+  const rows = selectedDirection && scheduleData[selectedDirection]
+    ? scheduleData[selectedDirection]
+    : Object.values(scheduleData).flat();
+
+  return SERVICE_DAYS.filter((day) =>
+    rows.some((row) => row.stop_times?.some((stopTime) => stopTime[day.key]))
+  );
+};
+
+function AdSlot({ className = '', format }) {
+  return (
+    <div className={`ad-slot ${className}`.trim()} aria-label="Advertisement">
+      <span>Advertisement</span>
+      {format && <small>{format}</small>}
+    </div>
+  );
+}
+
+function TimetableStatePanel({ title, message, loading = false }) {
+  return (
+    <div className={`table-state-panel ${loading ? 'loading' : ''}`.trim()}>
+      <div className="table-state-copy">
+        <h1>{title}</h1>
+        <p>{message}</p>
+      </div>
+      <div className="table-state-preview" aria-hidden="true">
+        <div className="table-state-preview-header">
+          <span />
+          <span />
+          <span />
+          <span />
+        </div>
+        {Array.from({ length: 6 }, (_, rowIndex) => (
+          <div className="table-state-preview-row" key={rowIndex}>
+            <span />
+            <span />
+            <span />
+            <span />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function LandingPage({
+  route,
+  schedules,
+  selectedAgency,
+  loadingSchedules,
+  onAgencyChange,
+  onRouteSelect,
+  setRoute,
+  setSelectedAgency,
+  setSelectedDirection,
+}) {
+  const agencies = [...new Set(schedules.map((schedule) => schedule.agency))].filter(Boolean);
+  const availableAgencies = agencies.map(getAgencyDisplayName).join(' and ');
+
+  return (
+    <main className="landing">
+      <section className="landing-hero">
+        <div className="landing-copy">
+          <p className="landing-eyebrow">Cape Town bus timetables</p>
+          <h1>Find the bus timetable you need.</h1>
+          <p>
+            Search Golden Arrow and MyCiTi route timetables in one place. More South African cities
+            and provinces are planned for future releases.
+          </p>
+        </div>
+
+        <div className="landing-search-panel">
+          <p className="landing-search-label">Search for a timetable</p>
+          {loadingSchedules ? (
+            <div className="route-list-loading">Loading routes...</div>
+          ) : (
+            <SchedulesDropdown
+              className="landing-schedule-picker"
+              placeholder="Search by route, area, or route number"
+              route={route}
+              schedules={schedules}
+              selectedAgency={selectedAgency}
+              onAgencyChange={onAgencyChange}
+              onRouteSelect={onRouteSelect}
+              setRoute={setRoute}
+              setSelectedAgency={setSelectedAgency}
+              setSelectedDirection={setSelectedDirection}
+            />
+          )}
+          <p id="landing-search-helper">
+            Available now: {availableAgencies || 'Cape Town bus services'}.
+          </p>
+        </div>
+      </section>
+
+      <section className="landing-ad-band">
+        <AdSlot className="ad-slot-banner" format="Responsive banner" />
+      </section>
+
+      <section className="coverage-band" aria-label="Timetable coverage">
+        <div className="coverage-copy">
+          <h2>Available now</h2>
+          <p>{getRouteCountLabel(schedules.length)} for Cape Town bus commuters.</p>
+        </div>
+        <div className="coverage-list">
+          <div className="coverage-item">
+            <img src="/agency-logos/gabs.png" alt="" />
+            <div>
+              <h3>Golden Arrow</h3>
+              <p>Cape Town route timetables</p>
+            </div>
+          </div>
+          <div className="coverage-item">
+            <img src="/agency-logos/myciti.png" alt="" />
+            <div>
+              <h3>MyCiTi</h3>
+              <p>Cape Town route timetables</p>
+            </div>
+          </div>
+        </div>
+        <div className="coverage-next">
+          <h2>Coming soon</h2>
+          <p>More operators, cities, and provinces as new timetable data is added.</p>
+        </div>
+      </section>
+    </main>
+  );
+}
 
 function App() {
   const [scheduleData, setScheduleData] = useState(null);
-  const [schedules, setSchedules] = useState([])
+  const [scheduleRows, setScheduleRows] = useState(null);
+  const [schedules, setSchedules] = useState([]);
   const [route, setRoute] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loadingSchedules, setLoadingSchedules] = useState(true);
+  const [loadingTimes, setLoadingTimes] = useState(false);
+  const [selectedAgency, setSelectedAgency] = useState('');
   const [selectedDirection, setSelectedDirection] = useState('');
+  const [selectedServiceDay, setSelectedServiceDay] = useState('');
+  const [mobileFilterSheet, setMobileFilterSheet] = useState(null);
+  const [hasOpenedTimetableView, setHasOpenedTimetableView] = useState(false);
+  const [timetableMessage, setTimetableMessage] = useState('');
+  const [routeSavedOffline, setRouteSavedOffline] = useState(false);
 
-  const groupBy = (array, key) => {
-    return array.reduce((result, currentValue) => {
-    
-      const keyValue = currentValue[key];
+  useEffect(() => {
+    let ignore = false;
 
-      if (!result[keyValue]) {
-        result[keyValue] = [];
+    const fetchSchedules = async () => {
+      const cachedSchedules = await getCachedSchedules();
+
+      if (!ignore && cachedSchedules?.data?.length) {
+        setSchedules(cachedSchedules.data);
+        setSelectedAgency((currentAgency) => currentAgency || cachedSchedules.data[0]?.agency || '');
+        setLoadingSchedules(false);
       }
 
-      result[keyValue].push(currentValue);
-      
-      return result;
-    }, {}); 
-  };
+      if (cachedSchedules?.data?.length && !isCacheStale(cachedSchedules.cachedAt)) {
+        return;
+      }
 
-  useEffect(()=> {
-    const fetchSchedules = async () => {
       try {
-        const response = await fetch('http://localhost:4000/schedules');
+        const response = await fetch(`${API_BASE_URL}/schedules`);
+
+        if (!response.ok) {
+          throw new Error('Unable to fetch schedules');
+        }
+
         const data = await response.json();
+
+        if (ignore) {
+          return;
+        }
+
         setSchedules(data);
-        setRoute(data[0])
-        setSelectedDirection(data[0].direction_1)
+        setSelectedAgency((currentAgency) => currentAgency || data[0]?.agency || '');
+        await saveSchedulesToCache(data);
       } catch (error) {
-        console.error("Error fetching schedules:", error);
+        console.error('Error fetching schedules:', error);
       } finally {
-        setLoading(false);
+        if (!ignore) {
+          setLoadingSchedules(false);
+        }
       }
     };
 
-    const fecthWeekdayTimes = async () => {
-      try {
-        const response = await fetch(`http://localhost:4000/weekday_times/${route.id}`);
-        const data = await response.json();
-        const grouped_data = groupBy(data, 'direction_name') 
-        setScheduleData(grouped_data)
-      } catch (error) {
-        console.error("Error fetching schedules:", error);
-      } finally {
-        setLoading(false);
-      }
-    }
+    fetchSchedules();
 
-    if (!route) {
-      fetchSchedules();
+    return () => {
+      ignore = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (route) {
+      setHasOpenedTimetableView(true);
     }
-    fecthWeekdayTimes();
   }, [route]);
 
+  const handleAgencyChange = (agency) => {
+    setSelectedAgency(agency);
+    setRoute(null);
+    setScheduleData(null);
+    setScheduleRows(null);
+    setSelectedDirection('');
+    setSelectedServiceDay('');
+    setMobileFilterSheet(null);
+    setRouteSavedOffline(false);
+    setTimetableMessage('Select a route to view its timetable.');
+  };
+
+  const handleRouteSelect = (selectedRoute) => {
+    setRoute(selectedRoute);
+    setSelectedAgency(selectedRoute.agency);
+    setSelectedDirection(getRouteDirections(selectedRoute)[0] || '');
+    setSelectedServiceDay('');
+    setMobileFilterSheet(null);
+    setTimetableMessage('');
+    setHasOpenedTimetableView(true);
+  };
+
+  useEffect(() => {
+    let ignore = false;
+
+    const fetchScheduleTimes = async () => {
+      const cachedTimetable = await getCachedTimetable(route.id);
+
+      if (ignore) {
+        return;
+      }
+
+      setRouteSavedOffline(Boolean(cachedTimetable?.saved));
+
+      if (cachedTimetable?.data?.length) {
+        setScheduleRows(cachedTimetable.data);
+        setScheduleData(groupBy(cachedTimetable.data, 'direction_name'));
+        setLoadingTimes(false);
+        setTimetableMessage('');
+        await touchTimetable(route.id);
+      } else {
+        setScheduleRows(null);
+        setScheduleData(null);
+      }
+
+      if (cachedTimetable?.data?.length && !isCacheStale(cachedTimetable.cachedAt)) {
+        return;
+      }
+
+      try {
+        if (!cachedTimetable?.data?.length) {
+          setLoadingTimes(true);
+        }
+
+        const response = await fetch(`${API_BASE_URL}/schedule_times/${route.id}`);
+
+        if (!response.ok) {
+          throw new Error('Unable to fetch timetable');
+        }
+
+        const data = await response.json();
+        const groupedData = groupBy(data, 'direction_name');
+
+        if (ignore) {
+          return;
+        }
+
+        setScheduleRows(data);
+        setScheduleData(groupedData);
+        setTimetableMessage('');
+        await saveTimetableToCache(route.id, data, cachedTimetable?.saved);
+        const refreshedTimetable = await getCachedTimetable(route.id);
+        setRouteSavedOffline(Boolean(refreshedTimetable?.saved));
+      } catch (error) {
+        console.error('Error fetching timetable:', error);
+
+        if (!cachedTimetable?.data?.length && !ignore) {
+          setTimetableMessage('This timetable is not available offline yet. Connect to the internet and open it once to cache it.');
+        }
+      } finally {
+        if (!ignore) {
+          setLoadingTimes(false);
+        }
+      }
+    };
+
+    if (route) {
+      setLoadingTimes(true);
+      setScheduleData(null);
+      setScheduleRows(null);
+      setTimetableMessage('');
+      fetchScheduleTimes();
+    }
+
+    return () => {
+      ignore = true;
+    };
+  }, [route]);
+
+  useEffect(() => {
+    const availableServiceDays = getAvailableServiceDays(scheduleData, selectedDirection);
+
+    if (!availableServiceDays.length) {
+      setSelectedServiceDay('');
+      return;
+    }
+
+    if (!availableServiceDays.some((day) => day.key === selectedServiceDay)) {
+      setSelectedServiceDay(availableServiceDays[0].key);
+    }
+  }, [scheduleData, selectedDirection, selectedServiceDay]);
+
+  const loading = loadingTimes;
+  const loadingInitialSchedules = loadingSchedules;
+  const availableServiceDays = getAvailableServiceDays(scheduleData, selectedDirection);
+  const directions = getRouteDirections(route);
+  const selectedServiceDayLabel = availableServiceDays.find((day) => day.key === selectedServiceDay)?.label;
+
+  const closeMobileFilterSheet = () => {
+    setMobileFilterSheet(null);
+  };
+
+  const handleSaveOfflineChange = async (saved) => {
+    if (!route) {
+      return;
+    }
+
+    if (scheduleRows?.length) {
+      await saveTimetableToCache(route.id, scheduleRows, saved);
+    } else {
+      await setTimetableSaved(route.id, saved);
+    }
+
+    setRouteSavedOffline(saved);
+  };
+
+  const routeSearchPlaceholder = selectedAgency
+    ? `Search ${getAgencyDisplayName(selectedAgency)} routes...`
+    : 'Search route...';
+
+  const showTimetableWorkspace = hasOpenedTimetableView || route;
 
   return (
     <div className="App">
       <Navbar />
-      {!loading && scheduleData ? (
+      {!showTimetableWorkspace ? (
+        <LandingPage
+          route={route}
+          schedules={schedules}
+          selectedAgency={selectedAgency}
+          loadingSchedules={loadingInitialSchedules}
+          onAgencyChange={handleAgencyChange}
+          onRouteSelect={handleRouteSelect}
+          setRoute={setRoute}
+          setSelectedAgency={setSelectedAgency}
+          setSelectedDirection={setSelectedDirection}
+        />
+      ) : (
         <div className='container'>
-          <div className='side-bar'>
-            <SchedulesDropdown setRoute={setRoute} schedules={schedules} setSelectedDirection={setSelectedDirection}/>
-            {route && (
-              <DirectionRadioButton
-                className="directions"
-                route={route}
-                setSelectedDirection={setSelectedDirection}
-                selectedDirection={selectedDirection}
-              />
-            )}
-          </div>
-          <div className='table'>
-            <ScheduleTable
-              selectedDirection={selectedDirection}
-              scheduleData={scheduleData}
-              route={route}
-            />
+          <div className="timetable-layout">
+            <div className="timetable-workspace">
+              <div className='side-bar'>
+                <SchedulesDropdown
+                  placeholder={routeSearchPlaceholder}
+                  route={route}
+                  schedules={schedules}
+                  selectedAgency={selectedAgency}
+                  onAgencyChange={handleAgencyChange}
+                  onRouteSelect={handleRouteSelect}
+                  setRoute={setRoute}
+                  setSelectedAgency={setSelectedAgency}
+                  setSelectedDirection={setSelectedDirection}
+                />
+                {directions.length > 0 && (
+                  <div className="mobile-filter-chips">
+                    {directions.length > 1 && (
+                      <button
+                        type="button"
+                        className="mobile-filter-chip"
+                        onClick={() => setMobileFilterSheet('direction')}
+                      >
+                        <span>Direction</span>
+                        <strong>{selectedDirection}</strong>
+                      </button>
+                    )}
+                    {availableServiceDays.length > 0 && (
+                      <button
+                        type="button"
+                        className="mobile-filter-chip"
+                        onClick={() => setMobileFilterSheet('serviceDay')}
+                      >
+                        <span>Day</span>
+                        <strong>{selectedServiceDayLabel}</strong>
+                      </button>
+                    )}
+                  </div>
+                )}
+                {route && (
+                  <DirectionRadioButton
+                    className="directions"
+                    route={route}
+                    setSelectedDirection={setSelectedDirection}
+                    selectedDirection={selectedDirection}
+                  />
+                )}
+                {availableServiceDays.length > 0 && (
+                  <div className="service-day-toggle-container">
+                    <label className="service-day-toggle-label">Service Day</label>
+                    <div className="service-day-toggle">
+                      {availableServiceDays.map((day) => (
+                        <button
+                          key={day.key}
+                          type="button"
+                          className={selectedServiceDay === day.key ? 'active' : ''}
+                          onClick={() => setSelectedServiceDay(day.key)}
+                        >
+                          {day.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div className='table'>
+                {!route ? (
+                  <TimetableStatePanel
+                    title="Select a route"
+                    message="Select a route to view its timetable."
+                  />
+                ) : timetableMessage ? (
+                  <TimetableStatePanel
+                    title="Timetable unavailable"
+                    message={timetableMessage}
+                  />
+                ) : loading || !scheduleData ? (
+                  <TimetableStatePanel
+                    title={route.name}
+                    message="Loading timetable..."
+                    loading
+                  />
+                ) : (
+                  <ScheduleTable
+                    selectedDirection={selectedDirection}
+                    selectedServiceDay={selectedServiceDay}
+                    scheduleData={scheduleData}
+                    route={route}
+                    savedOffline={routeSavedOffline}
+                    onSaveOfflineChange={handleSaveOfflineChange}
+                  />
+                )}
+              </div>
+              {mobileFilterSheet && (
+                <div className="mobile-sheet" role="dialog" aria-modal="true">
+                  <button
+                    type="button"
+                    className="mobile-sheet-backdrop"
+                    aria-label="Close filters"
+                    onClick={closeMobileFilterSheet}
+                  />
+                  <div className="mobile-sheet-panel">
+                    <div className="mobile-sheet-header">
+                      <h2>
+                        {mobileFilterSheet === 'direction' ? 'Select Direction' : 'Select Service Day'}
+                      </h2>
+                      <button type="button" onClick={closeMobileFilterSheet}>
+                        Close
+                      </button>
+                    </div>
+                    <div className="mobile-sheet-options">
+                      {mobileFilterSheet === 'direction' && directions.map((direction) => (
+                        <button
+                          key={direction}
+                          type="button"
+                          className={selectedDirection === direction ? 'active' : ''}
+                          onClick={() => {
+                            setSelectedDirection(direction);
+                            closeMobileFilterSheet();
+                          }}
+                        >
+                          {direction}
+                        </button>
+                      ))}
+                      {mobileFilterSheet === 'serviceDay' && availableServiceDays.map((day) => (
+                        <button
+                          key={day.key}
+                          type="button"
+                          className={selectedServiceDay === day.key ? 'active' : ''}
+                          onClick={() => {
+                            setSelectedServiceDay(day.key);
+                            closeMobileFilterSheet();
+                          }}
+                        >
+                          {day.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+            <aside className="timetable-ad-rail">
+              <AdSlot className="ad-slot-rail" format="Sidebar ad" />
+            </aside>
           </div>
         </div>
-      ) : (
-        <p>Loading schedules...</p>
       )}
     </div>
   );
