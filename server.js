@@ -19,6 +19,14 @@ const PUBLIC_INDEX_HTML_PATH = path.join(CLIENT_PUBLIC_DIR, 'index.html');
 const MIN_AREA_ROUTE_COUNT = 2;
 const MAX_AREA_LINKS = 30;
 const MAX_ROUTE_STOP_LINKS = 24;
+const SEO_CACHE_TTL_MS = 10 * 60 * 1000;
+const SLOW_SEO_RENDER_MS = 1000;
+
+let seoDataCache = {
+  data: null,
+  expiresAt: 0,
+  pending: null,
+};
 
 const app = express();
 if (IS_PRODUCTION) {
@@ -753,7 +761,7 @@ function finalizeAreas(areaMap) {
     .sort((first, second) => first.name.localeCompare(second.name));
 }
 
-async function getSeoAreas() {
+async function buildSeoData() {
   const [routes, stopRoutes] = await Promise.all([getAllRoutes(), getStopRouteAreas()]);
   const areaMap = new Map();
 
@@ -765,12 +773,50 @@ async function getSeoAreas() {
     upsertArea(areaMap, row.area_name, row);
   });
 
-  return finalizeAreas(areaMap);
+  const areas = finalizeAreas(areaMap);
+
+  return {
+    routes,
+    areas,
+    areaBySlug: new Map(areas.map((area) => [area.slug, area])),
+    generatedAt: Date.now(),
+  };
 }
 
-async function getSeoAreaBySlug(areaSlug) {
-  const areas = await getSeoAreas();
-  return areas.find((area) => area.slug === areaSlug);
+async function getSeoData({ forceRefresh = false } = {}) {
+  const now = Date.now();
+
+  if (!forceRefresh && seoDataCache.data && seoDataCache.expiresAt > now) {
+    return seoDataCache.data;
+  }
+
+  if (!forceRefresh && seoDataCache.pending) {
+    return seoDataCache.pending;
+  }
+
+  seoDataCache.pending = buildSeoData()
+    .then((data) => {
+      seoDataCache = {
+        data,
+        expiresAt: Date.now() + SEO_CACHE_TTL_MS,
+        pending: null,
+      };
+      return data;
+    })
+    .catch((error) => {
+      seoDataCache.pending = null;
+      throw error;
+    });
+
+  return seoDataCache.pending;
+}
+
+function logSlowSeoRender(label, startedAt) {
+  const durationMs = Date.now() - startedAt;
+
+  if (IS_PRODUCTION && durationMs > SLOW_SEO_RENDER_MS) {
+    console.warn(`Slow SEO render: ${label} took ${durationMs}ms`);
+  }
 }
 
 function renderRouteLinks(routes, className = 'seo-link-list') {
@@ -982,8 +1028,10 @@ app.get('/healthz/db', async (req, res) => {
 });
 
 app.get('/sitemap.xml', async (req, res) => {
+  const startedAt = Date.now();
+
   try {
-    const [rows, areas] = await Promise.all([getAllRoutes(), getSeoAreas()]);
+    const { routes, areas } = await getSeoData();
     const urls = [
       {
         loc: SITE_URL,
@@ -1001,7 +1049,7 @@ app.get('/sitemap.xml', async (req, res) => {
         loc: getAbsoluteUrl('/areas'),
         priority: '0.7',
       },
-      ...rows.map((route) => ({
+      ...routes.map((route) => ({
         loc: getAbsoluteUrl(getCanonicalTimetablePath(route)),
         priority: '0.8',
       })),
@@ -1022,6 +1070,7 @@ app.get('/sitemap.xml', async (req, res) => {
       )).join('\n') +
       `\n</urlset>\n`;
 
+    logSlowSeoRender('GET /sitemap.xml', startedAt);
     res.type('application/xml').send(sitemap);
   } catch (error) {
     console.error('Error generating sitemap', error);
@@ -1050,15 +1099,17 @@ app.get('/sw.js', (req, res) => {
   res.sendFile(serviceWorkerPath);
 });
 
-app.get('/', (req, res) => {
-  Promise.all([getAllRoutes(), getSeoAreas()])
-    .then(([routes, areas]) => {
-      res.send(renderIndexHtml(getHomepageSeo(), renderHomeBody(routes, areas)));
-    })
-    .catch((error) => {
-      console.error('Error rendering homepage', error);
-      res.send(renderIndexHtml(getHomepageSeo()));
-    });
+app.get('/', async (req, res) => {
+  const startedAt = Date.now();
+
+  try {
+    const { routes, areas } = await getSeoData();
+    logSlowSeoRender('GET /', startedAt);
+    res.send(renderIndexHtml(getHomepageSeo(), renderHomeBody(routes, areas)));
+  } catch (error) {
+    console.error('Error rendering homepage', error);
+    res.send(renderIndexHtml(getHomepageSeo()));
+  }
 });
 
 Object.keys(INFO_PAGES).forEach((pagePath) => {
@@ -1068,6 +1119,7 @@ Object.keys(INFO_PAGES).forEach((pagePath) => {
 });
 
 app.get('/operators/:agencySlug', async (req, res) => {
+  const startedAt = Date.now();
   const agency = AGENCY_FROM_SLUG[req.params.agencySlug];
 
   if (!agency) {
@@ -1088,9 +1140,10 @@ app.get('/operators/:agencySlug', async (req, res) => {
   }
 
   try {
-    const [routes, areas] = await Promise.all([getAllRoutes(), getSeoAreas()]);
+    const { routes, areas } = await getSeoData();
     const operatorRoutes = routes.filter((route) => route.agency === agency);
 
+    logSlowSeoRender(`GET /operators/${req.params.agencySlug}`, startedAt);
     res.send(renderIndexHtml(getOperatorSeo(agency), renderOperatorBody(agency, operatorRoutes, areas)));
   } catch (error) {
     console.error('Error rendering operator page', error);
@@ -1099,8 +1152,11 @@ app.get('/operators/:agencySlug', async (req, res) => {
 });
 
 app.get('/areas', async (req, res) => {
+  const startedAt = Date.now();
+
   try {
-    const areas = await getSeoAreas();
+    const { areas } = await getSeoData();
+    logSlowSeoRender('GET /areas', startedAt);
     res.send(renderIndexHtml(getAreasSeo(), renderAreasBody(areas)));
   } catch (error) {
     console.error('Error rendering areas page', error);
@@ -1109,8 +1165,11 @@ app.get('/areas', async (req, res) => {
 });
 
 app.get('/areas/:areaSlug', async (req, res) => {
+  const startedAt = Date.now();
+
   try {
-    const area = await getSeoAreaBySlug(req.params.areaSlug);
+    const { areaBySlug } = await getSeoData();
+    const area = areaBySlug.get(req.params.areaSlug);
 
     if (!area) {
       res.status(404).send(renderIndexHtml(getHomepageSeo(), renderSeoShell({
@@ -1128,6 +1187,7 @@ app.get('/areas/:areaSlug', async (req, res) => {
       return;
     }
 
+    logSlowSeoRender(`GET /areas/${req.params.areaSlug}`, startedAt);
     res.send(renderIndexHtml(getAreaSeo(area), renderAreaBody(area)));
   } catch (error) {
     console.error('Error rendering area page', error);
@@ -1136,6 +1196,7 @@ app.get('/areas/:areaSlug', async (req, res) => {
 });
 
 app.get('/timetables/:agency/:routeSlug', async (req, res) => {
+  const startedAt = Date.now();
   const routeIdMatch = req.params.routeSlug.match(/^(\d+)(?:-|$)/);
 
   if (!routeIdMatch) {
@@ -1148,9 +1209,9 @@ app.get('/timetables/:agency/:routeSlug', async (req, res) => {
   }
 
   try {
-    const [route, allRoutes] = await Promise.all([
+    const [route, seoData] = await Promise.all([
       getRouteById(routeIdMatch[1]),
-      getAllRoutes(),
+      getSeoData(),
     ]);
 
     if (!route) {
@@ -1169,16 +1230,16 @@ app.get('/timetables/:agency/:routeSlug', async (req, res) => {
       return;
     }
 
-    const [stops, serviceWindow, indexedAreas] = await Promise.all([
+    const [stops, serviceWindow] = await Promise.all([
       getRouteStops(route.id),
       getRouteServiceWindow(route.id),
-      getSeoAreas(),
     ]);
-    const relatedRoutes = getRelatedRoutes(route, allRoutes);
+    const relatedRoutes = getRelatedRoutes(route, seoData.routes);
 
+    logSlowSeoRender(`GET /timetables/${req.params.agency}/${req.params.routeSlug}`, startedAt);
     res.send(renderIndexHtml(
       getTimetableSeo(route, serviceWindow),
-      renderTimetableBody(route, stops, serviceWindow, relatedRoutes, indexedAreas)
+      renderTimetableBody(route, stops, serviceWindow, relatedRoutes, seoData.areas)
     ));
   } catch (error) {
     console.error('Error rendering timetable route', error);
