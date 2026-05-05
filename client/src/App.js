@@ -3,6 +3,23 @@ import SchedulesDropdown from './SchedulesDropdown';
 import ScheduleTable from './ScheduleTable';
 import DirectionRadioButton from './DirectionRadioButton';
 import Navbar from './Navbar';
+import AdSlot from './AdSlot';
+import { AreaPage, AreasIndexPage } from './AreaPages';
+import InfoPage, { INFO_PAGES } from './InfoPage';
+import OperatorPage from './OperatorPage';
+import SiteFooter from './SiteFooter';
+import {
+  getAgencyDisplayName,
+  getAreaSlugFromPath,
+  getOperatorAgencyFromPath,
+  getRouteCountLabel,
+  getRouteDirections,
+  getRouteIdFromPath,
+  getTimetablePath,
+  isAreasIndexPath,
+  normalizeDirectionLabel,
+  slugify,
+} from './routeUtils';
 import {
   getCachedSchedules,
   getCachedTimetable,
@@ -24,82 +41,21 @@ const SERVICE_DAYS = [
   { key: 'public_holiday', label: 'Public Holiday' },
 ];
 
-const AGENCY_DISPLAY_NAMES = {
-  GABS: 'Golden Arrow',
-  MyCiti: 'MyCiTi',
-};
+const FEATURED_AREA_LINKS = [
+  'Cape Town',
+  'Bellville',
+  'Khayelitsha',
+  'Claremont',
+  'Delft',
+  'Wynberg',
+  'Blouberg',
+  'Atlantis',
+];
 
 const LOCAL_API_PORT = '4000';
 const LOCAL_API_BASE_URL = `http://localhost:${LOCAL_API_PORT}`;
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL ||
   (process.env.NODE_ENV === 'production' ? '' : LOCAL_API_BASE_URL);
-const IS_PRODUCTION = process.env.NODE_ENV === 'production';
-
-const INFO_PAGES = {
-  '/about': {
-    title: 'About Fika Timetables',
-    eyebrow: 'About',
-    body: [
-      'Fika Timetables helps Cape Town commuters search Golden Arrow and MyCiTi bus timetables in one place.',
-      'The site is designed for quick route lookup, readable timetable views, and offline access to routes you view often.',
-      'More South African operators, cities, and provinces are planned as reliable timetable data becomes available.',
-    ],
-  },
-  '/contact': {
-    title: 'Contact Fika Timetables',
-    eyebrow: 'Contact',
-    body: [
-      'For timetable feedback, data corrections, accessibility issues, or general enquiries, contact the Fika team.',
-      'Email: hello@fikatimetables.co.za',
-      'Please include the agency, route name, direction, and stop details when reporting timetable data issues.',
-    ],
-  },
-  '/privacy-policy': {
-    title: 'Privacy Policy',
-    eyebrow: 'Privacy',
-    body: [
-      'Fika Timetables stores viewed and saved timetables in your browser using IndexedDB so selected timetable data can be available offline.',
-      'The site does not require user accounts. If analytics or advertising are added, this policy should disclose the cookies, identifiers, and third-party services used.',
-      'Future AdSense ads may use cookies or similar technologies from Google to serve and measure ads, subject to your region and consent choices.',
-    ],
-  },
-  '/terms': {
-    title: 'Terms and Disclaimer',
-    eyebrow: 'Terms',
-    body: [
-      'Fika Timetables is provided as a commuter-friendly timetable viewer. Always confirm critical trips with the relevant transport operator.',
-      'Timetable data can change, and Fika does not guarantee that every route, stop, or trip time is complete or current.',
-      'You may use the site for personal timetable lookup. Automated scraping or abusive request patterns are not permitted.',
-    ],
-  },
-};
-
-const getAgencyDisplayName = (agency) => AGENCY_DISPLAY_NAMES[agency] || agency;
-
-const slugify = (value) => {
-  return String(value || '')
-    .toLowerCase()
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/&/g, ' and ')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '') || 'route';
-};
-
-const getAgencySlug = (agency) => slugify(agency);
-
-const getTimetablePath = (route) => {
-  if (!route) {
-    return '/';
-  }
-
-  return `/timetables/${getAgencySlug(route.agency)}/${route.id}-${slugify(route.name)}`;
-};
-
-const getRouteIdFromPath = (pathname) => {
-  const match = pathname.match(/^\/timetables\/[^/]+\/(\d+)(?:-|$)/);
-  return match ? Number(match[1]) : null;
-};
 
 const getInitialRouteId = () => {
   if (typeof window === 'undefined') {
@@ -150,29 +106,24 @@ const fetchApiJson = async (endpoint, errorMessage) => {
     return response.json();
   };
 
-  try {
-    return await fetchJson(API_BASE_URL);
-  } catch (error) {
-    const canTryCurrentHostApi = !process.env.REACT_APP_API_BASE_URL &&
-      !IS_PRODUCTION &&
-      API_BASE_URL === '' &&
-      typeof window !== 'undefined' &&
-      window.location.port !== LOCAL_API_PORT;
+  const candidateBaseUrls = [
+    API_BASE_URL,
+    '',
+    getCurrentHostApiBaseUrl(),
+    LOCAL_API_BASE_URL,
+  ].filter((baseUrl, index, urls) => urls.indexOf(baseUrl) === index);
 
-    if (canTryCurrentHostApi) {
-      return fetchJson(getCurrentHostApiBaseUrl());
+  let lastError;
+
+  for (const baseUrl of candidateBaseUrls) {
+    try {
+      return await fetchJson(baseUrl);
+    } catch (error) {
+      lastError = error;
     }
-
-    throw error;
-  }
-};
-
-const getRouteCountLabel = (count) => {
-  if (!count) {
-    return 'Route timetables';
   }
 
-  return `${count} route timetable${count === 1 ? '' : 's'}`;
+  throw lastError || new Error(errorMessage);
 };
 
 const groupBy = (array, key) => {
@@ -187,18 +138,6 @@ const groupBy = (array, key) => {
 
     return result;
   }, {});
-};
-
-const getRouteDirections = (route) => {
-  return [route?.direction_1, route?.direction_2].filter(Boolean);
-};
-
-const normalizeDirectionLabel = (direction) => {
-  if (!direction) {
-    return direction;
-  }
-
-  return String(direction).replace(/^to\s+/i, '').trim();
 };
 
 const normalizeScheduleRoutes = (routes) => {
@@ -229,15 +168,6 @@ const getAvailableServiceDays = (scheduleData, selectedDirection) => {
     rows.some((row) => row.stop_times?.some((stopTime) => stopTime[day.key]))
   );
 };
-
-function AdSlot({ className = '', format }) {
-  return (
-    <div className={`ad-slot ${className}`.trim()} aria-label="Advertisement">
-      <span>Advertisement</span>
-      {format && <small>{format}</small>}
-    </div>
-  );
-}
 
 function TimetableStatePanel({ title, message, loading = false }) {
   return (
@@ -317,7 +247,14 @@ function LandingPage({
       </section>
 
       <section className="landing-ad-band">
-        <AdSlot className="ad-slot-banner" format="Responsive banner" />
+        <AdSlot
+          adClient="ca-pub-6988683138579622"
+          adFormat="fluid"
+          adLayout="in-article"
+          adSlot="4341548768"
+          className="ad-slot-banner"
+          textAlign="center"
+        />
       </section>
 
       <section className="coverage-band" aria-label="Timetable coverage">
@@ -327,16 +264,20 @@ function LandingPage({
         </div>
         <div className="coverage-list">
           <div className="coverage-item">
-            <img src="/agency-logos/gabs.png" alt="" />
+            <a href="/operators/golden-arrow" className="coverage-link">
+              <img src="/agency-logos/gabs.png" alt="" />
+            </a>
             <div>
-              <h3>Golden Arrow</h3>
+              <h3><a href="/operators/golden-arrow">Golden Arrow</a></h3>
               <p>Cape Town route timetables</p>
             </div>
           </div>
           <div className="coverage-item">
-            <img src="/agency-logos/myciti.png" alt="" />
+            <a href="/operators/myciti" className="coverage-link">
+              <img src="/agency-logos/myciti.png" alt="" />
+            </a>
             <div>
-              <h3>MyCiTi</h3>
+              <h3><a href="/operators/myciti">MyCiTi</a></h3>
               <p>Cape Town route timetables</p>
             </div>
           </div>
@@ -346,32 +287,14 @@ function LandingPage({
           <p>More operators, cities, and provinces as new timetable data is added.</p>
         </div>
       </section>
-    </main>
-  );
-}
 
-function SiteFooter() {
-  return (
-    <footer className="site-footer">
-      <a href="/about">About</a>
-      <a href="/contact">Contact</a>
-      <a href="/privacy-policy">Privacy Policy</a>
-      <a href="/terms">Terms</a>
-    </footer>
-  );
-}
-
-function InfoPage({ page }) {
-  return (
-    <main className="info-page">
-      <section className="info-panel">
-        <p className="info-eyebrow">{page.eyebrow}</p>
-        <h1>{page.title}</h1>
-        {page.body.map((paragraph) => (
-          <p key={paragraph}>{paragraph}</p>
+      <section className="area-link-band" aria-label="Popular Cape Town bus areas">
+        {FEATURED_AREA_LINKS.map((areaName) => (
+          <a key={areaName} href={`/areas/${slugify(areaName)}`}>
+            {areaName}
+          </a>
         ))}
       </section>
-      <SiteFooter />
     </main>
   );
 }
@@ -651,12 +574,32 @@ function App() {
 
   const showTimetableWorkspace = hasOpenedTimetableView || route;
   const infoPage = INFO_PAGES[currentPath];
+  const operatorAgency = getOperatorAgencyFromPath(currentPath);
+  const areaSlug = getAreaSlugFromPath(currentPath);
+  const isAreasIndex = isAreasIndexPath(currentPath);
 
   return (
     <div className="App">
       <Navbar />
       {infoPage ? (
         <InfoPage page={infoPage} />
+      ) : operatorAgency ? (
+        <OperatorPage
+          agency={operatorAgency}
+          schedules={schedules}
+          loadingSchedules={loadingInitialSchedules}
+        />
+      ) : isAreasIndex ? (
+        <AreasIndexPage
+          schedules={schedules}
+          loadingSchedules={loadingInitialSchedules}
+        />
+      ) : areaSlug ? (
+        <AreaPage
+          areaSlug={areaSlug}
+          schedules={schedules}
+          loadingSchedules={loadingInitialSchedules}
+        />
       ) : !showTimetableWorkspace ? (
         <>
           <LandingPage
@@ -816,7 +759,12 @@ function App() {
               )}
             </div>
             <aside className="timetable-ad-rail">
-              <AdSlot className="ad-slot-rail" format="Sidebar ad" />
+              <AdSlot
+                adClient="ca-pub-6988683138579622"
+                adFormat="autorelaxed"
+                adSlot="2670138789"
+                className="ad-slot-rail"
+              />
             </aside>
           </div>
         </div>

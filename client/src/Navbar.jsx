@@ -11,6 +11,15 @@ export default function Navbar() {
                     <a href="/about" className="navSecondaryLink">About</a>
                 </li>
                 <li className="navItem navItemSecondary">
+                    <a href="/operators/myciti" className="navSecondaryLink">MyCiTi</a>
+                </li>
+                <li className="navItem navItemSecondary">
+                    <a href="/operators/golden-arrow" className="navSecondaryLink">Golden Arrow</a>
+                </li>
+                <li className="navItem navItemSecondary">
+                    <a href="/areas" className="navSecondaryLink">Areas</a>
+                </li>
+                <li className="navItem navItemSecondary">
                     <a href="/contact" className="navSecondaryLink">Contact</a>
                 </li>
             </ul>
