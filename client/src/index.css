@@ -80,7 +80,6 @@ html,
 body,
 #root {
   height: 100%;
-  overflow: hidden;
 }
 
 body {
@@ -106,6 +105,11 @@ code {
 .App {
   display: flex;
   flex-direction: column;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.App.timetable-app {
   height: 100vh;
   height: 100dvh;
   min-height: 0;
@@ -185,10 +189,14 @@ code {
   display: flex;
   flex: 1;
   flex-direction: column;
-  max-height: 100%;
   min-height: 0;
   overflow: hidden;
   padding: 16px 20px 20px;
+}
+
+.timetable-app .container {
+  flex: 1 1 auto;
+  height: 0;
 }
 
 .landing {
@@ -454,7 +462,7 @@ code {
   flex: 1;
   gap: 16px;
   grid-template-columns: minmax(0, 1fr) 280px;
-  max-height: 100%;
+  height: 100%;
   min-height: 0;
   overflow: hidden;
 }
@@ -462,14 +470,14 @@ code {
 .timetable-workspace {
   display: flex;
   flex-direction: column;
-  max-height: 100%;
+  height: 100%;
   min-height: 0;
   overflow: hidden;
 }
 
 .timetable-ad-rail {
   display: flex;
-  max-height: 100%;
+  height: 100%;
   min-height: 0;
   overflow: hidden;
 }
@@ -737,8 +745,8 @@ code {
 
 .table {
   display: flex;
-  flex: 1;
-  max-height: 100%;
+  flex: 1 1 auto;
+  height: 0;
   min-height: 0;
   overflow: hidden;
 }
@@ -1131,7 +1139,7 @@ input:checked + label {
   display: flex;
   flex: 1;
   flex-direction: column;
-  max-height: 100%;
+  height: 100%;
   min-height: 0;
   overflow: hidden;
   padding: 14px;
@@ -1142,10 +1150,12 @@ input:checked + label {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: 6px;
-  flex: 1;
+  flex: 1 1 auto;
+  height: 0;
   min-height: 0;
   overflow: auto;
   position: relative;
+  -webkit-overflow-scrolling: touch;
   width: 100%;
 }
 

@@ -579,7 +579,7 @@ function App() {
   const isAreasIndex = isAreasIndexPath(currentPath);
 
   return (
-    <div className="App">
+    <div className={`App ${showTimetableWorkspace ? 'timetable-app' : ''}`.trim()}>
       <Navbar />
       {infoPage ? (
         <InfoPage page={infoPage} />
