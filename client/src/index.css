@@ -105,15 +105,9 @@ code {
 .App {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
-  min-height: 100dvh;
-}
-
-.App.timetable-app {
   height: 100vh;
   height: 100dvh;
   min-height: 0;
-  overflow: hidden;
 }
 
 .nav {
@@ -192,11 +186,6 @@ code {
   min-height: 0;
   overflow: hidden;
   padding: 16px 20px 20px;
-}
-
-.timetable-app .container {
-  flex: 1 1 auto;
-  height: 0;
 }
 
 .landing {
