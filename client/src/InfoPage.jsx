@@ -25,8 +25,10 @@ export const INFO_PAGES = {
     eyebrow: 'Privacy',
     body: [
       'Fika Timetables stores viewed and saved timetables in your browser using IndexedDB so selected timetable data can be available offline.',
-      'The site does not require user accounts. If analytics or advertising are added, this policy should disclose the cookies, identifiers, and third-party services used.',
-      'Future AdSense ads may use cookies or similar technologies from Google to serve and measure ads, subject to your region and consent choices.',
+      'Fika Timetables uses Google AdSense to show advertising. Google and other third-party vendors may use cookies, web beacons, IP addresses, and similar identifiers to serve, personalize, limit, and measure ads.',
+      'Google uses advertising cookies to help serve ads based on your prior visits to this and other websites. You can opt out of personalized advertising by visiting Google Ads Settings at https://adssettings.google.com, review Google advertising technologies at https://policies.google.com/technologies/ads, or use industry opt-out tools such as https://www.aboutads.info/choices.',
+      'You can manage or delete cookies in your browser settings. Where required by law, including for visitors in the European Economic Area, the United Kingdom, and Switzerland, Fika Timetables will request consent before using cookies or identifiers for personalized advertising.',
+      'The site does not require user accounts and does not ask for sensitive personal information. Contact hello@fikatimetables.co.za for privacy questions.',
     ],
   },
   '/terms': {

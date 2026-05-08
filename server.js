@@ -9,8 +9,12 @@ const path = require('path');
 
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const PORT = Number(process.env.PORT) || 4000;
-const DEFAULT_SITE_URL = IS_PRODUCTION ? 'https://www.fika.net.za' : `http://localhost:${PORT}`;
-const SITE_URL = (process.env.SITE_URL || DEFAULT_SITE_URL).replace(/\/$/, '');
+const PRODUCTION_SITE_URL = 'https://www.fika.net.za';
+const DEFAULT_SITE_URL = IS_PRODUCTION ? PRODUCTION_SITE_URL : `http://localhost:${PORT}`;
+const SITE_URL = (IS_PRODUCTION
+  ? process.env.CANONICAL_SITE_URL || PRODUCTION_SITE_URL
+  : process.env.SITE_URL || DEFAULT_SITE_URL
+).replace(/\/$/, '');
 const ADSENSE_PUBLISHER_ID = process.env.ADSENSE_PUBLISHER_ID || '';
 const CLIENT_BUILD_DIR = path.join(__dirname, 'client', 'build');
 const CLIENT_PUBLIC_DIR = path.join(__dirname, 'client', 'public');
@@ -88,7 +92,6 @@ app.use((req, res, next) => {
   const shouldRedirectHost = IS_PRODUCTION &&
     requestHost &&
     requestHost !== canonicalHost &&
-    canonicalHost === 'fika.net.za' &&
     req.method === 'GET' &&
     req.accepts('html') &&
     !req.path.startsWith('/schedules') &&
@@ -252,19 +255,49 @@ const OPERATOR_COPY = {
 const INFO_PAGES = {
   '/about': {
     title: 'About Fika Timetables | Cape Town Bus Timetables',
+    heading: 'About Fika Timetables',
+    eyebrow: 'About',
     description: 'Learn about Fika Timetables, a simple way to search Golden Arrow and MyCiTi bus timetables for Cape Town commuters.',
+    body: [
+      'Fika Timetables helps Cape Town commuters search Golden Arrow and MyCiTi bus timetables in one place.',
+      'The site is designed for quick route lookup, readable timetable views, and offline access to routes you view often.',
+      'More South African operators, cities, and provinces are planned as reliable timetable data becomes available.',
+    ],
   },
   '/contact': {
     title: 'Contact Fika Timetables',
+    heading: 'Contact Fika Timetables',
+    eyebrow: 'Contact',
     description: 'Contact Fika Timetables for timetable feedback, data questions, and site enquiries.',
+    body: [
+      'For timetable feedback, data corrections, accessibility issues, or general enquiries, contact the Fika team.',
+      'Email: hello@fikatimetables.co.za',
+      'Please include the agency, route name, direction, and stop details when reporting timetable data issues.',
+    ],
   },
   '/privacy-policy': {
     title: 'Privacy Policy | Fika Timetables',
-    description: 'Read how Fika Timetables handles local offline timetable caching, analytics, cookies, and future advertising disclosures.',
+    heading: 'Privacy Policy',
+    eyebrow: 'Privacy',
+    description: 'Read how Fika Timetables handles offline timetable caching, advertising cookies, third-party ad identifiers, and consent choices.',
+    body: [
+      'Fika Timetables stores viewed and saved timetables in your browser using IndexedDB so selected timetable data can be available offline.',
+      'Fika Timetables uses Google AdSense to show advertising. Google and other third-party vendors may use cookies, web beacons, IP addresses, and similar identifiers to serve, personalize, limit, and measure ads.',
+      'Google uses advertising cookies to help serve ads based on your prior visits to this and other websites. You can opt out of personalized advertising by visiting Google Ads Settings at https://adssettings.google.com, review Google advertising technologies at https://policies.google.com/technologies/ads, or use industry opt-out tools such as https://www.aboutads.info/choices.',
+      'You can manage or delete cookies in your browser settings. Where required by law, including for visitors in the European Economic Area, the United Kingdom, and Switzerland, Fika Timetables will request consent before using cookies or identifiers for personalized advertising.',
+      'The site does not require user accounts and does not ask for sensitive personal information. Contact hello@fikatimetables.co.za for privacy questions.',
+    ],
   },
   '/terms': {
     title: 'Terms and Disclaimer | Fika Timetables',
+    heading: 'Terms and Disclaimer',
+    eyebrow: 'Terms',
     description: 'Review the Fika Timetables terms, timetable accuracy disclaimer, and acceptable use guidance.',
+    body: [
+      'Fika Timetables is provided as a commuter-friendly timetable viewer. Always confirm critical trips with the relevant transport operator.',
+      'Timetable data can change, and Fika does not guarantee that every route, stop, or trip time is complete or current.',
+      'You may use the site for personal timetable lookup. Automated scraping or abusive request patterns are not permitted.',
+    ],
   },
 };
 
@@ -839,6 +872,39 @@ function renderAreaLinks(areas, className = 'seo-link-list') {
   )).join('')}</ul>`;
 }
 
+function renderSiteFooter() {
+  const links = [
+    { href: '/operators/myciti', label: 'MyCiTi' },
+    { href: '/operators/golden-arrow', label: 'Golden Arrow' },
+    { href: '/areas', label: 'Areas' },
+    { href: '/about', label: 'About' },
+    { href: '/contact', label: 'Contact' },
+    { href: '/privacy-policy', label: 'Privacy Policy' },
+    { href: '/terms', label: 'Terms' },
+  ];
+
+  return `
+    <footer class="site-footer">
+      ${links.map((link) => (
+        `<a href="${escapeHtml(link.href)}">${escapeHtml(link.label)}</a>`
+      )).join('')}
+    </footer>
+  `;
+}
+
+function renderInfoBody(page) {
+  return `
+    <main class="info-page">
+      <section class="info-panel">
+        <p class="info-eyebrow">${escapeHtml(page.eyebrow)}</p>
+        <h1>${escapeHtml(page.heading || page.title)}</h1>
+        ${page.body.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join('')}
+      </section>
+      ${renderSiteFooter()}
+    </main>
+  `;
+}
+
 function renderSeoShell({ eyebrow, title, description, sections = [] }) {
   return `
     <main class="seo-page">
@@ -1114,7 +1180,7 @@ app.get('/', async (req, res) => {
 
 Object.keys(INFO_PAGES).forEach((pagePath) => {
   app.get(pagePath, (req, res) => {
-    res.send(renderIndexHtml(getInfoPageSeo(pagePath)));
+    res.send(renderIndexHtml(getInfoPageSeo(pagePath), renderInfoBody(INFO_PAGES[pagePath])));
   });
 });
 
