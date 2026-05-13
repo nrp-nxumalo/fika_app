@@ -25,6 +25,13 @@ const MAX_AREA_LINKS = 30;
 const MAX_ROUTE_STOP_LINKS = 24;
 const SEO_CACHE_TTL_MS = 10 * 60 * 1000;
 const SLOW_SEO_RENDER_MS = 1000;
+const REQUEST_LOGGING_ENABLED = process.env.REQUEST_LOGGING_ENABLED !== 'false';
+const DEV_REQUEST_IPS = new Set(
+  (process.env.DEV_REQUEST_IPS || '')
+    .split(',')
+    .map((value) => normalizeIp(value))
+    .filter(Boolean)
+);
 
 let seoDataCache = {
   data: null,
@@ -58,6 +65,66 @@ const developmentOrigins = new Set([
 ]);
 const allowedOrigins = new Set([siteOrigin, ...developmentOrigins]);
 
+function normalizeIp(value) {
+  if (!value) {
+    return '';
+  }
+
+  const normalizedValue = value.trim().toLowerCase();
+
+  if (!normalizedValue) {
+    return '';
+  }
+
+  if (normalizedValue.startsWith('::ffff:')) {
+    return normalizedValue.slice(7);
+  }
+
+  return normalizedValue;
+}
+
+function getForwardedIps(req) {
+  const forwardedForHeader = req.get('x-forwarded-for');
+
+  if (!forwardedForHeader) {
+    return [];
+  }
+
+  return forwardedForHeader
+    .split(',')
+    .map((value) => normalizeIp(value))
+    .filter(Boolean);
+}
+
+function getRequestLabel(req, forwardedIps) {
+  const requestIps = new Set([
+    normalizeIp(req.ip),
+    ...forwardedIps,
+  ].filter(Boolean));
+
+  if (
+    requestIps.has('127.0.0.1') ||
+    requestIps.has('::1') ||
+    [...requestIps].some((ip) => DEV_REQUEST_IPS.has(ip))
+  ) {
+    return 'dev_request';
+  }
+
+  return 'external_request';
+}
+
+function shouldLogRequest(req) {
+  if (!REQUEST_LOGGING_ENABLED || req.path === '/healthz') {
+    return false;
+  }
+
+  if (req.method !== 'GET') {
+    return true;
+  }
+
+  return !req.path.includes('.') || req.path.endsWith('.xml');
+}
+
 app.use(compression());
 app.use(helmet({
   contentSecurityPolicy: {
@@ -85,6 +152,38 @@ app.use(cors({
     callback(new Error('Not allowed by CORS'));
   },
 }));
+
+app.use((req, res, next) => {
+  if (!shouldLogRequest(req)) {
+    next();
+    return;
+  }
+
+  const startedAt = Date.now();
+  const forwardedIps = getForwardedIps(req);
+  const requestDetails = {
+    event: 'incoming_request',
+    requestLabel: getRequestLabel(req, forwardedIps),
+    method: req.method,
+    path: req.originalUrl,
+    host: req.get('host') || null,
+    ip: req.ip,
+    forwardedIps,
+    origin: req.get('origin') || null,
+    referer: req.get('referer') || null,
+    userAgent: req.get('user-agent') || null,
+  };
+
+  res.on('finish', () => {
+    console.log(JSON.stringify({
+      ...requestDetails,
+      status: res.statusCode,
+      durationMs: Date.now() - startedAt,
+    }));
+  });
+
+  next();
+});
 
 app.use((req, res, next) => {
   const canonicalHost = new URL(SITE_URL).host;

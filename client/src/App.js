@@ -56,6 +56,7 @@ const LOCAL_API_PORT = '4000';
 const LOCAL_API_BASE_URL = `http://localhost:${LOCAL_API_PORT}`;
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL ||
   (process.env.NODE_ENV === 'production' ? '' : LOCAL_API_BASE_URL);
+const TIMETABLE_AD_RAIL_MEDIA_QUERY = '(min-width: 1181px)';
 
 const getInitialRouteId = () => {
   if (typeof window === 'undefined') {
@@ -88,6 +89,14 @@ const getCurrentHostApiBaseUrl = () => {
   }
 
   return `${window.location.protocol}//${window.location.hostname}:${LOCAL_API_PORT}`;
+};
+
+const getMatchesMediaQuery = (mediaQuery) => {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    return false;
+  }
+
+  return window.matchMedia(mediaQuery).matches;
 };
 
 const fetchApiJson = async (endpoint, errorMessage) => {
@@ -315,6 +324,9 @@ function App() {
   const [routeSavedOffline, setRouteSavedOffline] = useState(false);
   const [requestedRouteId, setRequestedRouteId] = useState(getInitialRouteId);
   const [currentPath, setCurrentPath] = useState(getCurrentPath);
+  const [showTimetableAdRail, setShowTimetableAdRail] = useState(() =>
+    getMatchesMediaQuery(TIMETABLE_AD_RAIL_MEDIA_QUERY)
+  );
 
   const clearTimetableSelection = ({ showWorkspace = false, message = '' } = {}) => {
     setRoute(null);
@@ -406,6 +418,33 @@ function App() {
 
     return () => {
       window.removeEventListener('popstate', handlePopState);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return undefined;
+    }
+
+    const mediaQueryList = window.matchMedia(TIMETABLE_AD_RAIL_MEDIA_QUERY);
+    const handleChange = (event) => {
+      setShowTimetableAdRail(event.matches);
+    };
+
+    setShowTimetableAdRail(mediaQueryList.matches);
+
+    if (typeof mediaQueryList.addEventListener === 'function') {
+      mediaQueryList.addEventListener('change', handleChange);
+
+      return () => {
+        mediaQueryList.removeEventListener('change', handleChange);
+      };
+    }
+
+    mediaQueryList.addListener(handleChange);
+
+    return () => {
+      mediaQueryList.removeListener(handleChange);
     };
   }, []);
 
@@ -758,14 +797,16 @@ function App() {
                 </div>
               )}
             </div>
-            <aside className="timetable-ad-rail">
-              <AdSlot
-                adClient="ca-pub-6988683138579622"
-                adFormat="autorelaxed"
-                adSlot="2670138789"
-                className="ad-slot-rail"
-              />
-            </aside>
+            {showTimetableAdRail && (
+              <aside className="timetable-ad-rail">
+                <AdSlot
+                  adClient="ca-pub-6988683138579622"
+                  adFormat="autorelaxed"
+                  adSlot="2670138789"
+                  className="ad-slot-rail"
+                />
+              </aside>
+            )}
           </div>
         </div>
       )}
