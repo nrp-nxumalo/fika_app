@@ -164,17 +164,147 @@ const normalizeTimetableRows = (rows) => {
   }));
 };
 
+const compareTrips = (firstTrip, secondTrip) => {
+  const firstPattern = firstTrip.service_pattern || '';
+  const secondPattern = secondTrip.service_pattern || '';
+  const patternComparison = secondPattern.localeCompare(firstPattern);
+
+  if (patternComparison !== 0) {
+    return patternComparison;
+  }
+
+  const firstArrival = firstTrip.first_arrival || '';
+  const secondArrival = secondTrip.first_arrival || '';
+  const arrivalComparison = firstArrival.localeCompare(secondArrival);
+
+  if (arrivalComparison !== 0) {
+    return arrivalComparison;
+  }
+
+  return Number(firstTrip.trip_id) - Number(secondTrip.trip_id);
+};
+
+const getLegacyTripMetadata = (stopTime) => {
+  const trip = {
+    trip_id: Number(stopTime.trip_id),
+    service_pattern: stopTime.service_pattern || '',
+    first_arrival: stopTime.first_arrival || '',
+  };
+
+  SERVICE_DAYS.forEach((day) => {
+    if (stopTime[day.key]) {
+      trip[day.key] = true;
+    }
+  });
+
+  return trip;
+};
+
+const getLegacyStopTimeCell = (stopTime) => {
+  const cell = {
+    trip_id: Number(stopTime.trip_id),
+  };
+
+  if (stopTime.arrival) {
+    cell.arrival = stopTime.arrival;
+  }
+
+  if (stopTime.stop_time_type) {
+    cell.stop_time_type = stopTime.stop_time_type;
+  }
+
+  return cell;
+};
+
+const buildTimetablePayloadFromLegacyRows = (rows) => {
+  const normalizedRows = normalizeTimetableRows(rows);
+
+  return {
+    version: 2,
+    directions: Object.entries(groupBy(normalizedRows, 'direction_name')).map(([directionName, directionRows]) => {
+      const tripById = new Map();
+
+      const normalizedDirectionRows = directionRows.map((row) => {
+        const stopTimes = (row.stop_times || []).map((stopTime) => {
+          const tripId = Number(stopTime.trip_id);
+
+          if (!tripById.has(tripId)) {
+            tripById.set(tripId, getLegacyTripMetadata(stopTime));
+          }
+
+          return getLegacyStopTimeCell(stopTime);
+        });
+
+        return {
+          name: row.name,
+          sequence: Number(row.sequence) || 0,
+          stop_times: stopTimes,
+        };
+      });
+
+      return {
+        id: directionRows[0]?.directions_id == null ? null : Number(directionRows[0].directions_id),
+        name: directionName,
+        trips: [...tripById.values()].sort(compareTrips),
+        rows: normalizedDirectionRows,
+      };
+    }),
+  };
+};
+
+const normalizeTimetablePayload = (payload) => {
+  if (payload?.version === 2 && Array.isArray(payload.directions)) {
+    return {
+      ...payload,
+      directions: payload.directions.map((direction) => ({
+        ...direction,
+        name: normalizeDirectionLabel(direction.name),
+        trips: (direction.trips || [])
+          .map((trip) => ({
+            ...trip,
+            trip_id: Number(trip.trip_id),
+          }))
+          .sort(compareTrips),
+        rows: (direction.rows || []).map((row) => ({
+          ...row,
+          sequence: Number(row.sequence) || 0,
+          stop_times: (row.stop_times || []).map((stopTime) => ({
+            ...stopTime,
+            trip_id: Number(stopTime.trip_id),
+          })),
+        })),
+      })),
+    };
+  }
+
+  return buildTimetablePayloadFromLegacyRows(Array.isArray(payload) ? payload : []);
+};
+
+const buildScheduleData = (payload) => {
+  const normalizedPayload = normalizeTimetablePayload(payload);
+
+  return normalizedPayload.directions.reduce((result, direction) => {
+    result[direction.name] = {
+      ...direction,
+      trips: direction.trips || [],
+      rows: direction.rows || [],
+    };
+
+    return result;
+  }, {});
+};
+
 const getAvailableServiceDays = (scheduleData, selectedDirection) => {
   if (!scheduleData) {
     return [];
   }
 
-  const rows = selectedDirection && scheduleData[selectedDirection]
-    ? scheduleData[selectedDirection]
-    : Object.values(scheduleData).flat();
+  const directionGroups = selectedDirection && scheduleData[selectedDirection]
+    ? [scheduleData[selectedDirection]]
+    : Object.values(scheduleData);
 
   return SERVICE_DAYS.filter((day) =>
-    rows.some((row) => row.stop_times?.some((stopTime) => stopTime[day.key]))
+    directionGroups.some((direction) => direction.trips?.some((trip) => trip[day.key]))
   );
 };
 
@@ -310,7 +440,7 @@ function LandingPage({
 
 function App() {
   const [scheduleData, setScheduleData] = useState(null);
-  const [scheduleRows, setScheduleRows] = useState(null);
+  const [timetablePayload, setTimetablePayload] = useState(null);
   const [schedules, setSchedules] = useState([]);
   const [route, setRoute] = useState(null);
   const [loadingSchedules, setLoadingSchedules] = useState(true);
@@ -331,7 +461,7 @@ function App() {
   const clearTimetableSelection = ({ showWorkspace = false, message = '' } = {}) => {
     setRoute(null);
     setScheduleData(null);
-    setScheduleRows(null);
+    setTimetablePayload(null);
     setSelectedDirection('');
     setSelectedServiceDay('');
     setMobileFilterSheet(null);
@@ -507,47 +637,52 @@ function App() {
 
       setRouteSavedOffline(Boolean(cachedTimetable?.saved));
 
-      if (cachedTimetable?.data?.length) {
-        const cachedTimetableData = normalizeTimetableRows(cachedTimetable.data);
+      if (cachedTimetable?.data) {
+        const cachedTimetablePayload = normalizeTimetablePayload(cachedTimetable.data);
 
-        setScheduleRows(cachedTimetableData);
-        setScheduleData(groupBy(cachedTimetableData, 'direction_name'));
+        setTimetablePayload(cachedTimetablePayload);
+        setScheduleData(buildScheduleData(cachedTimetablePayload));
         setLoadingTimes(false);
         setTimetableMessage('');
         await touchTimetable(route.id);
       } else {
-        setScheduleRows(null);
+        setTimetablePayload(null);
         setScheduleData(null);
       }
 
-      if (cachedTimetable?.data?.length && !isCacheStale(cachedTimetable.cachedAt)) {
+      if (cachedTimetable?.data && !isCacheStale(cachedTimetable.cachedAt)) {
         return;
       }
 
       try {
-        if (!cachedTimetable?.data?.length) {
+        if (!cachedTimetable?.data) {
           setLoadingTimes(true);
         }
 
-        const data = normalizeTimetableRows(
-          await fetchApiJson(`/schedule_times/${route.id}`, 'Unable to fetch timetable')
-        );
-        const groupedData = groupBy(data, 'direction_name');
+        let data;
+
+        try {
+          data = await fetchApiJson(`/api/v2/schedule_times/${route.id}`, 'Unable to fetch timetable');
+        } catch (error) {
+          data = await fetchApiJson(`/schedule_times/${route.id}`, 'Unable to fetch timetable');
+        }
+
+        const normalizedPayload = normalizeTimetablePayload(data);
 
         if (ignore) {
           return;
         }
 
-        setScheduleRows(data);
-        setScheduleData(groupedData);
+        setTimetablePayload(normalizedPayload);
+        setScheduleData(buildScheduleData(normalizedPayload));
         setTimetableMessage('');
-        await saveTimetableToCache(route.id, data, cachedTimetable?.saved);
+        await saveTimetableToCache(route.id, normalizedPayload, cachedTimetable?.saved);
         const refreshedTimetable = await getCachedTimetable(route.id);
         setRouteSavedOffline(Boolean(refreshedTimetable?.saved));
       } catch (error) {
         console.error('Error fetching timetable:', error);
 
-        if (!cachedTimetable?.data?.length && !ignore) {
+        if (!cachedTimetable?.data && !ignore) {
           setTimetableMessage('This timetable is not available offline yet. Connect to the internet and open it once to cache it.');
         }
       } finally {
@@ -560,7 +695,7 @@ function App() {
     if (route) {
       setLoadingTimes(true);
       setScheduleData(null);
-      setScheduleRows(null);
+      setTimetablePayload(null);
       setTimetableMessage('');
       fetchScheduleTimes();
     }
@@ -598,8 +733,8 @@ function App() {
       return;
     }
 
-    if (scheduleRows?.length) {
-      await saveTimetableToCache(route.id, scheduleRows, saved);
+    if (timetablePayload) {
+      await saveTimetableToCache(route.id, timetablePayload, saved);
     } else {
       await setTimetableSaved(route.id, saved);
     }

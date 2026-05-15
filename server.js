@@ -6,6 +6,19 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const fs = require('fs');
 const path = require('path');
+const {
+  API_CACHE_PAYLOAD_KINDS,
+  API_RESPONSE_CACHE_INDEX_SQL,
+  API_RESPONSE_CACHE_TABLE_SQL,
+  createEtag,
+  getApiCacheKey,
+} = require('./lib/apiCache');
+const {
+  buildNormalizedTimetablePayload,
+  routeByIdQuery,
+  scheduleTimesQuery,
+  schedulesQuery,
+} = require('./lib/apiPayloads');
 
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const PORT = Number(process.env.PORT) || 4000;
@@ -25,6 +38,9 @@ const MAX_AREA_LINKS = 30;
 const MAX_ROUTE_STOP_LINKS = 24;
 const SEO_CACHE_TTL_MS = 10 * 60 * 1000;
 const SLOW_SEO_RENDER_MS = 1000;
+const PUBLIC_API_CACHE_CONTROL = process.env.PUBLIC_API_CACHE_CONTROL || 'public, max-age=300, stale-while-revalidate=86400';
+const API_RESPONSE_CACHE_ENABLED = process.env.API_RESPONSE_CACHE_ENABLED !== 'false';
+const PG_POOL_MAX = Number(process.env.PG_POOL_MAX) || (IS_PRODUCTION ? 5 : 10);
 const REQUEST_LOGGING_ENABLED = process.env.REQUEST_LOGGING_ENABLED !== 'false';
 const DEV_REQUEST_IPS = new Set(
   (process.env.DEV_REQUEST_IPS || '')
@@ -54,7 +70,15 @@ const localPoolConfig = {
 const pool = new Pool(process.env.DATABASE_URL ? {
   connectionString: process.env.DATABASE_URL,
   ssl: IS_PRODUCTION ? { rejectUnauthorized: false } : undefined,
-} : localPoolConfig);
+  max: PG_POOL_MAX,
+  idleTimeoutMillis: 30 * 1000,
+  connectionTimeoutMillis: 5 * 1000,
+} : {
+  ...localPoolConfig,
+  max: PG_POOL_MAX,
+  idleTimeoutMillis: 30 * 1000,
+  connectionTimeoutMillis: 5 * 1000,
+});
 
 const siteOrigin = new URL(SITE_URL).origin;
 const developmentOrigins = new Set([
@@ -193,6 +217,7 @@ app.use((req, res, next) => {
     requestHost !== canonicalHost &&
     req.method === 'GET' &&
     req.accepts('html') &&
+    !req.path.startsWith('/api/') &&
     !req.path.startsWith('/schedules') &&
     !req.path.startsWith('/schedule_times') &&
     !req.path.startsWith('/healthz') &&
@@ -212,118 +237,275 @@ const publicApiLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
-app.use(['/schedules', '/schedule_times', '/sitemap.xml'], publicApiLimiter);
-
-const schedulesQuery = `
-  SELECT
-    routes.id,
-    routes.name,
-    routes.code,
-    routes.agency,
-    MAX(CASE WHEN directions.row_num = 1 THEN directions.direction END) AS direction_1,
-    MAX(CASE WHEN directions.row_num = 2 THEN directions.direction END) AS direction_2
-  FROM routes
-  JOIN (
-    SELECT
-      direction,
-      route_id,
-      ROW_NUMBER() OVER (PARTITION BY route_id ORDER BY direction) AS row_num
-    FROM directions
-  ) AS directions ON routes.id = directions.route_id
-  WHERE routes.name != ''
-  GROUP BY routes.id, routes.name, routes.code, routes.agency
-  ORDER BY routes.agency, routes.name, routes.id;
-`;
-
-const routeByIdQuery = `
-  SELECT
-    routes.id,
-    routes.name,
-    routes.code,
-    routes.agency,
-    MAX(CASE WHEN directions.row_num = 1 THEN directions.direction END) AS direction_1,
-    MAX(CASE WHEN directions.row_num = 2 THEN directions.direction END) AS direction_2
-  FROM routes
-  JOIN (
-    SELECT
-      direction,
-      route_id,
-      ROW_NUMBER() OVER (PARTITION BY route_id ORDER BY direction) AS row_num
-    FROM directions
-  ) AS directions ON routes.id = directions.route_id
-  WHERE routes.name != ''
-    AND routes.id = $1
-  GROUP BY routes.id, routes.name, routes.code, routes.agency
-  LIMIT 1;
-`;
-
-const scheduleTimesQuery = `
-  WITH route_stop_times AS (
-    SELECT
-      stops.name,
-      directions.direction AS direction_name,
-      directions.id AS directions_id,
-      stop_times.sequence,
-      trips.id AS trip_id,
-      stop_times.arrival,
-      stop_times.stop_time_type,
-      trips.monday,
-      trips.tuesday,
-      trips.wednesday,
-      trips.thursday,
-      trips.friday,
-      trips.saturday,
-      trips.sunday,
-      trips.public_holiday,
-      CONCAT(
-        trips.monday::int,
-        trips.tuesday::int,
-        trips.wednesday::int,
-        trips.thursday::int,
-        trips.friday::int,
-        trips.saturday::int,
-        trips.sunday::int,
-        trips.public_holiday::int
-      ) AS service_pattern,
-      MIN(stop_times.arrival) OVER (PARTITION BY trips.id) AS first_arrival
-    FROM directions
-    JOIN trips ON trips.direction_id = directions.id
-    JOIN stop_times ON stop_times.trip_id = trips.id
-    JOIN stops ON stops.id = stop_times.stop_id
-    WHERE directions.route_id = $1
-  )
-
-  SELECT
-    name,
-    direction_name,
-    directions_id,
-    sequence,
-    JSON_AGG(
-      JSON_BUILD_OBJECT(
-        'trip_id', trip_id,
-        'arrival', arrival,
-        'stop_time_type', stop_time_type,
-        'monday', monday,
-        'tuesday', tuesday,
-        'wednesday', wednesday,
-        'thursday', thursday,
-        'friday', friday,
-        'saturday', saturday,
-        'sunday', sunday,
-        'public_holiday', public_holiday,
-        'service_pattern', service_pattern,
-        'first_arrival', first_arrival
-      )
-      ORDER BY service_pattern DESC, first_arrival, trip_id
-    ) AS stop_times
-  FROM route_stop_times
-  GROUP BY directions_id, direction_name, sequence, name
-  ORDER BY directions_id, sequence;
-`;
+app.use(['/schedules', '/schedule_times', '/api/v2/schedule_times', '/sitemap.xml'], publicApiLimiter);
 
 function handleQueryError(res, error) {
   console.error('Error executing query', error);
   res.status(500).json({ error: 'Internal Server Error' });
+}
+
+let apiResponseCacheReady = false;
+let apiResponseCacheSetupPromise = null;
+let apiResponseCacheWarningLogged = false;
+
+async function ensureApiResponseCacheTable() {
+  if (apiResponseCacheReady) {
+    return;
+  }
+
+  if (!apiResponseCacheSetupPromise) {
+    apiResponseCacheSetupPromise = (async () => {
+      await pool.query(API_RESPONSE_CACHE_TABLE_SQL);
+      await pool.query(API_RESPONSE_CACHE_INDEX_SQL);
+      apiResponseCacheReady = true;
+    })().finally(() => {
+      apiResponseCacheSetupPromise = null;
+    });
+  }
+
+  await apiResponseCacheSetupPromise;
+}
+
+async function getApiResponseCacheEntry(cacheKey) {
+  const startedAt = Date.now();
+
+  if (!API_RESPONSE_CACHE_ENABLED) {
+    return {
+      entry: null,
+      queryMs: 0,
+      unavailable: false,
+    };
+  }
+
+  try {
+    await ensureApiResponseCacheTable();
+
+    const { rows } = await pool.query(`
+      SELECT
+        etag,
+        payload_text,
+        payload_gzip,
+        payload_br,
+        updated_at,
+        octet_length(payload_text) AS payload_bytes,
+        octet_length(payload_gzip) AS gzip_bytes,
+        octet_length(payload_br) AS br_bytes
+      FROM api_response_cache
+      WHERE cache_key = $1
+      LIMIT 1;
+    `, [cacheKey]);
+
+    return {
+      entry: rows[0] || null,
+      queryMs: Date.now() - startedAt,
+      unavailable: false,
+    };
+  } catch (error) {
+    if (!apiResponseCacheWarningLogged) {
+      apiResponseCacheWarningLogged = true;
+      console.warn('API response cache unavailable; falling back to live queries', error);
+    }
+
+    return {
+      entry: null,
+      queryMs: Date.now() - startedAt,
+      unavailable: true,
+    };
+  }
+}
+
+function logApiResponse(req, metrics) {
+  if (!REQUEST_LOGGING_ENABLED) {
+    return;
+  }
+
+  console.log(JSON.stringify({
+    event: 'api_response',
+    method: req.method,
+    path: req.originalUrl,
+    status: metrics.status,
+    cacheKey: metrics.cacheKey,
+    cacheHit: metrics.cacheHit,
+    cacheQueryMs: metrics.cacheQueryMs,
+    queryMs: metrics.queryMs,
+    payloadBytes: metrics.payloadBytes,
+    responseBytes: metrics.responseBytes,
+    encoding: metrics.encoding,
+    durationMs: metrics.durationMs,
+  }));
+}
+
+function setJsonCacheHeaders(req, res, { etag, updatedAt, cacheHit }) {
+  res.type('application/json');
+  res.set('Cache-Control', PUBLIC_API_CACHE_CONTROL);
+  res.set('ETag', etag);
+  res.set('Vary', 'Accept-Encoding');
+  res.set('X-Fika-Cache', cacheHit ? 'hit' : 'miss');
+
+  if (updatedAt) {
+    res.set('Last-Modified', new Date(updatedAt).toUTCString());
+  }
+
+  return req.fresh;
+}
+
+function getPreferredCachedEncoding(req, entry) {
+  const preferredEncoding = req.acceptsEncodings('br', 'gzip', 'identity');
+
+  if (preferredEncoding === 'br' && entry.payload_br) {
+    return {
+      encoding: 'br',
+      body: entry.payload_br,
+      responseBytes: Number(entry.br_bytes) || entry.payload_br.length,
+    };
+  }
+
+  if (preferredEncoding === 'gzip' && entry.payload_gzip) {
+    return {
+      encoding: 'gzip',
+      body: entry.payload_gzip,
+      responseBytes: Number(entry.gzip_bytes) || entry.payload_gzip.length,
+    };
+  }
+
+  if (preferredEncoding === false) {
+    return null;
+  }
+
+  const body = Buffer.from(entry.payload_text);
+
+  return {
+    encoding: 'identity',
+    body,
+    responseBytes: Number(entry.payload_bytes) || body.length,
+  };
+}
+
+function sendCachedApiPayload(req, res, { entry, cacheKey, cacheQueryMs, startedAt }) {
+  const payloadBytes = Number(entry.payload_bytes) || Buffer.byteLength(entry.payload_text);
+  const isFresh = setJsonCacheHeaders(req, res, {
+    etag: entry.etag,
+    updatedAt: entry.updated_at,
+    cacheHit: true,
+  });
+
+  if (isFresh) {
+    res.status(304).end();
+    logApiResponse(req, {
+      cacheKey,
+      cacheHit: true,
+      cacheQueryMs,
+      queryMs: 0,
+      payloadBytes,
+      responseBytes: 0,
+      encoding: 'not-modified',
+      status: 304,
+      durationMs: Date.now() - startedAt,
+    });
+    return;
+  }
+
+  const encodedPayload = getPreferredCachedEncoding(req, entry);
+
+  if (!encodedPayload) {
+    res.status(406).send('Not Acceptable');
+    logApiResponse(req, {
+      cacheKey,
+      cacheHit: true,
+      cacheQueryMs,
+      queryMs: 0,
+      payloadBytes,
+      responseBytes: 0,
+      encoding: 'not-acceptable',
+      status: 406,
+      durationMs: Date.now() - startedAt,
+    });
+    return;
+  }
+
+  if (encodedPayload.encoding !== 'identity') {
+    res.set('Content-Encoding', encodedPayload.encoding);
+  }
+
+  res.set('Content-Length', String(encodedPayload.responseBytes));
+  res.send(encodedPayload.body);
+  logApiResponse(req, {
+    cacheKey,
+    cacheHit: true,
+    cacheQueryMs,
+    queryMs: 0,
+    payloadBytes,
+    responseBytes: encodedPayload.responseBytes,
+    encoding: encodedPayload.encoding,
+    status: 200,
+    durationMs: Date.now() - startedAt,
+  });
+}
+
+function sendLiveApiPayload(req, res, { payload, cacheKey, cacheQueryMs, queryMs, startedAt }) {
+  const payloadText = JSON.stringify(payload);
+  const payloadBytes = Buffer.byteLength(payloadText);
+  const etag = createEtag(payloadText);
+  const isFresh = setJsonCacheHeaders(req, res, {
+    etag,
+    cacheHit: false,
+  });
+
+  if (isFresh) {
+    res.status(304).end();
+    logApiResponse(req, {
+      cacheKey,
+      cacheHit: false,
+      cacheQueryMs,
+      queryMs,
+      payloadBytes,
+      responseBytes: 0,
+      encoding: 'not-modified',
+      status: 304,
+      durationMs: Date.now() - startedAt,
+    });
+    return;
+  }
+
+  res.send(payloadText);
+  logApiResponse(req, {
+    cacheKey,
+    cacheHit: false,
+    cacheQueryMs,
+    queryMs,
+    payloadBytes,
+    responseBytes: payloadBytes,
+    encoding: 'dynamic',
+    status: 200,
+    durationMs: Date.now() - startedAt,
+  });
+}
+
+async function sendApiPayload(req, res, { cacheKey, loadPayload }) {
+  const startedAt = Date.now();
+  const cacheResult = await getApiResponseCacheEntry(cacheKey);
+
+  if (cacheResult.entry) {
+    sendCachedApiPayload(req, res, {
+      entry: cacheResult.entry,
+      cacheKey,
+      cacheQueryMs: cacheResult.queryMs,
+      startedAt,
+    });
+    return;
+  }
+
+  const liveQueryStartedAt = Date.now();
+  const payload = await loadPayload();
+  const queryMs = Date.now() - liveQueryStartedAt;
+
+  sendLiveApiPayload(req, res, {
+    payload,
+    cacheKey,
+    cacheQueryMs: cacheResult.queryMs,
+    queryMs,
+    startedAt,
+  });
 }
 
 const AGENCY_DISPLAY_NAMES = {
@@ -796,6 +978,11 @@ async function getAllRoutes() {
   return rows;
 }
 
+async function getScheduleTimes(routeId) {
+  const { rows } = await pool.query(scheduleTimesQuery, [routeId]);
+  return rows;
+}
+
 async function getRouteServiceWindow(routeId) {
   const { rows } = await pool.query(`
     SELECT MIN(stop_times.arrival) AS first_time, MAX(stop_times.arrival) AS last_time
@@ -831,29 +1018,36 @@ async function getRouteStops(routeId) {
 
 async function getStopRouteAreas() {
   const { rows } = await pool.query(`
-    SELECT DISTINCT
-      stops.name AS area_name,
+    WITH served_stop_routes AS (
+      SELECT DISTINCT
+        directions.route_id,
+        stops.name AS area_name
+      FROM stop_times
+      JOIN trips ON trips.id = stop_times.trip_id
+      JOIN directions ON directions.id = trips.direction_id
+      JOIN stops ON stops.id = stop_times.stop_id
+      WHERE COALESCE(stop_times.stop_time_type, '') != 'not_served'
+    ),
+    route_directions AS (
+      SELECT
+        route_id,
+        (ARRAY_AGG(direction ORDER BY direction))[1] AS direction_1,
+        (ARRAY_AGG(direction ORDER BY direction))[2] AS direction_2
+      FROM directions
+      GROUP BY route_id
+    )
+    SELECT
+      served_stop_routes.area_name,
       routes.id,
       routes.name,
       routes.code,
       routes.agency,
-      MAX(CASE WHEN ranked_directions.row_num = 1 THEN ranked_directions.direction END) OVER (PARTITION BY routes.id, stops.name) AS direction_1,
-      MAX(CASE WHEN ranked_directions.row_num = 2 THEN ranked_directions.direction END) OVER (PARTITION BY routes.id, stops.name) AS direction_2
-    FROM stops
-    JOIN stop_times ON stop_times.stop_id = stops.id
-    JOIN trips ON trips.id = stop_times.trip_id
-    JOIN directions ON directions.id = trips.direction_id
-    JOIN routes ON routes.id = directions.route_id
-    JOIN (
-      SELECT
-        id,
-        route_id,
-        direction,
-        ROW_NUMBER() OVER (PARTITION BY route_id ORDER BY direction) AS row_num
-      FROM directions
-    ) ranked_directions ON ranked_directions.route_id = routes.id
-    WHERE routes.name != ''
-      AND COALESCE(stop_times.stop_time_type, '') != 'not_served';
+      route_directions.direction_1,
+      route_directions.direction_2
+    FROM served_stop_routes
+    JOIN routes ON routes.id = served_stop_routes.route_id
+    JOIN route_directions ON route_directions.route_id = routes.id
+    WHERE routes.name != '';
   `);
 
   return rows;
@@ -1155,8 +1349,10 @@ function getRelatedRoutes(route, allRoutes) {
 
 app.get('/schedules', async (req, res) => {
   try {
-    const { rows } = await pool.query(schedulesQuery);
-    res.json(rows);
+    await sendApiPayload(req, res, {
+      cacheKey: getApiCacheKey(API_CACHE_PAYLOAD_KINDS.schedulesV1),
+      loadPayload: getAllRoutes,
+    });
   } catch (error) {
     handleQueryError(res, error);
   }
@@ -1171,8 +1367,28 @@ app.get('/schedule_times/:id', async (req, res) => {
   }
 
   try {
-    const { rows } = await pool.query(scheduleTimesQuery, [id]);
-    res.json(rows);
+    await sendApiPayload(req, res, {
+      cacheKey: getApiCacheKey(API_CACHE_PAYLOAD_KINDS.scheduleTimesV1, id),
+      loadPayload: () => getScheduleTimes(id),
+    });
+  } catch (error) {
+    handleQueryError(res, error);
+  }
+});
+
+app.get('/api/v2/schedule_times/:id', async (req, res) => {
+  const { id } = req.params;
+
+  if (!/^\d+$/.test(id)) {
+    res.status(400).json({ error: 'Route id must be numeric' });
+    return;
+  }
+
+  try {
+    await sendApiPayload(req, res, {
+      cacheKey: getApiCacheKey(API_CACHE_PAYLOAD_KINDS.scheduleTimesV2, id),
+      loadPayload: async () => buildNormalizedTimetablePayload(id, await getScheduleTimes(id)),
+    });
   } catch (error) {
     handleQueryError(res, error);
   }

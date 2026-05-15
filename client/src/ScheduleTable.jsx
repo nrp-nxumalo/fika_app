@@ -67,22 +67,8 @@ const getServiceBadge = (trip) => {
   return ranges.join(', ') || 'No Service Days';
 };
 
-const getVisibleTrips = (rows, selectedServiceDay) => {
-  const trips = new Map();
-
-  rows.forEach((row) => {
-    row.stop_times?.forEach((stopTime) => {
-      if (selectedServiceDay && !stopTime[selectedServiceDay]) {
-        return;
-      }
-
-      if (!trips.has(stopTime.trip_id)) {
-        trips.set(stopTime.trip_id, stopTime);
-      }
-    });
-  });
-
-  return [...trips.values()].sort((firstTrip, secondTrip) => {
+const getVisibleTrips = (trips, selectedServiceDay) => {
+  return (trips || []).filter((trip) => !selectedServiceDay || trip[selectedServiceDay]).sort((firstTrip, secondTrip) => {
     const firstArrival = firstTrip.first_arrival || '';
     const secondArrival = secondTrip.first_arrival || '';
 
@@ -126,7 +112,7 @@ const ScheduleTable = ({
 
   const defaultDirection = Object.keys(scheduleData)[0];
   const directionData = selectedDirection !== '' ? scheduleData[selectedDirection] : scheduleData[defaultDirection];
-  const visibleTrips = directionData ? getVisibleTrips(directionData, selectedServiceDay) : [];
+  const visibleTrips = directionData ? getVisibleTrips(directionData.trips, selectedServiceDay) : [];
   const agencyLogo = getAgencyLogo(route?.agency);
   const columnCount = visibleTrips.length;
 
@@ -175,7 +161,7 @@ const ScheduleTable = ({
               </tr>
             </thead>
             <tbody>
-              {directionData.map((row, rowIndex) => {
+              {(directionData.rows || []).map((row, rowIndex) => {
                 const timesByTripId = getTimesByTripId(row);
 
                 return (
