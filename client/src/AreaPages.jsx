@@ -27,6 +27,17 @@ export function AreaPage({ areaSlug, schedules, loadingSchedules }) {
             Find Golden Arrow and MyCiTi routes serving {areaName}. Select a route to view its
             timetable, stops, directions, and service days.
           </p>
+          <p>
+            Area pages are built from route names and direction labels in the timetable data. A
+            route may appear here because it starts in {areaName}, ends there, or links commuters
+            to the area.
+          </p>
+          <h2>Timetable notes</h2>
+          <p>
+            Fika is independent from transport operators. Use these area links for planning and
+            route discovery, then confirm urgent service changes through Golden Arrow or MyCiTi
+            before travelling.
+          </p>
           <h2>Routes serving {areaName}</h2>
           {loadingSchedules ? (
             <p>Loading routes...</p>
@@ -55,6 +66,16 @@ export function AreasIndexPage({ schedules, loadingSchedules }) {
           <h1>Cape Town bus areas and stops</h1>
           <p>
             Browse Golden Arrow and MyCiTi timetable pages by Cape Town area, stop, and route coverage.
+          </p>
+          <p>
+            The area index groups loaded timetable data into place-based pages so commuters can
+            discover routes by suburb, interchange, terminal, or corridor instead of only by route
+            number.
+          </p>
+          <h2>How areas are grouped</h2>
+          <p>
+            Areas are generated from route names and direction names. Some names may
+            represent a terminal, station, or corridor rather than a municipal suburb boundary.
           </p>
           <h2>Areas and stops</h2>
           {loadingSchedules ? (

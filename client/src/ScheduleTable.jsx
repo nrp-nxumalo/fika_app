@@ -1,4 +1,5 @@
 import React from 'react';
+import { getAgencyDisplayName } from './routeUtils';
 
 const SERVICE_DAYS = [
   { key: 'monday', short: 'Mon' },
@@ -103,7 +104,7 @@ const ScheduleTable = ({
     return (
       <div className='schedule-table'>
         <div className='route-title'>
-          <h1>{route ? `${route.agency}: ${route.name}` : 'Timetable'}</h1>
+          <h1>{route ? `${getAgencyDisplayName(route.agency)}: ${route.name}` : 'Timetable'}</h1>
         </div>
         <p>Loading schedule data...</p>
       </div>
@@ -115,11 +116,16 @@ const ScheduleTable = ({
   const visibleTrips = directionData ? getVisibleTrips(directionData.trips, selectedServiceDay) : [];
   const agencyLogo = getAgencyLogo(route?.agency);
   const columnCount = visibleTrips.length;
+  const agencyName = getAgencyDisplayName(route?.agency);
+  const stopCount = directionData?.rows?.length || 0;
+  const serviceDayText = selectedServiceDay
+    ? selectedServiceDay.replace(/_/g, ' ')
+    : 'the selected service day';
 
   return (
     <div className='schedule-table'>
       <div className='route-title'>
-        <h1>{route ? `${route.agency}: ${route.name}` : 'Table'}</h1>
+        <h1>{route ? `${agencyName}: ${route.name}` : 'Table'}</h1>
         {route && onSaveOfflineChange && (
           <label className="save-offline-toggle">
             <input
@@ -131,6 +137,12 @@ const ScheduleTable = ({
           </label>
         )}
       </div>
+      {route && directionData && (
+        <p className="route-summary">
+          This {agencyName} timetable lists {stopCount} stops for {directionData.name || selectedDirection || 'this direction'}
+          {' '}and {visibleTrips.length} trips for {serviceDayText}. Fika is independent, so confirm urgent service changes with the operator.
+        </p>
+      )}
       {directionData !== undefined ? (
         <div className="table-container">
           {agencyLogo && (

@@ -28,7 +28,7 @@ const SITE_URL = (IS_PRODUCTION
   ? process.env.CANONICAL_SITE_URL || PRODUCTION_SITE_URL
   : process.env.SITE_URL || DEFAULT_SITE_URL
 ).replace(/\/$/, '');
-const ADSENSE_PUBLISHER_ID = process.env.ADSENSE_PUBLISHER_ID || '';
+const ADSENSE_PUBLISHER_ID = process.env.ADSENSE_PUBLISHER_ID || 'pub-6988683138579622';
 const CLIENT_BUILD_DIR = path.join(__dirname, 'client', 'build');
 const CLIENT_PUBLIC_DIR = path.join(__dirname, 'client', 'public');
 const INDEX_HTML_PATH = path.join(CLIENT_BUILD_DIR, 'index.html');
@@ -36,6 +36,7 @@ const PUBLIC_INDEX_HTML_PATH = path.join(CLIENT_PUBLIC_DIR, 'index.html');
 const MIN_AREA_ROUTE_COUNT = 2;
 const MAX_AREA_LINKS = 30;
 const MAX_ROUTE_STOP_LINKS = 24;
+const MAX_ROUTE_STOPS = 36;
 const SEO_CACHE_TTL_MS = 10 * 60 * 1000;
 const SLOW_SEO_RENDER_MS = 1000;
 const PUBLIC_API_CACHE_CONTROL = process.env.PUBLIC_API_CACHE_CONTROL || 'public, max-age=300, stale-while-revalidate=86400';
@@ -533,6 +534,10 @@ const OPERATOR_COPY = {
     description: 'Search MyCiTi bus timetables for Cape Town routes, stops, route numbers, and service days on Fika Timetables.',
   },
 };
+const OPERATOR_SERVICE_URLS = {
+  GABS: 'https://www.gabs.co.za/',
+  MyCiti: 'https://www.myciti.org.za',
+};
 const INFO_PAGES = {
   '/about': {
     title: 'About Fika Timetables | Cape Town Bus Timetables',
@@ -540,8 +545,9 @@ const INFO_PAGES = {
     eyebrow: 'About',
     description: 'Learn about Fika Timetables, a simple way to search Golden Arrow and MyCiTi bus timetables for Cape Town commuters.',
     body: [
-      'Fika Timetables helps Cape Town commuters search Golden Arrow and MyCiTi bus timetables in one place.',
-      'The site is designed for quick route lookup, readable timetable views, and offline access to routes you view often.',
+      'Fika Timetables helps Cape Town commuters search Golden Arrow and MyCiTi bus timetables in one place. The site turns route data into readable pages with route names, directions, stops, service days, and listed trip times.',
+      'The project exists because bus timetable information is often split across PDFs, operator pages, and route notices. Fika keeps the everyday lookup task focused: choose a route, compare the available directions, and scan the stop-by-stop timetable.',
+      'Viewed timetables can be stored in your browser for offline reference. This is useful during commutes where mobile data is unreliable, but critical journeys should still be confirmed with the relevant transport operator.',
       'More South African operators, cities, and provinces are planned as reliable timetable data becomes available.',
     ],
   },
@@ -554,6 +560,7 @@ const INFO_PAGES = {
       'For timetable feedback, data corrections, accessibility issues, or general enquiries, contact the Fika team.',
       'Email: hello@fikatimetables.co.za',
       'Please include the agency, route name, direction, and stop details when reporting timetable data issues.',
+      'Fika is an independent timetable viewer and does not operate bus services, sell travel cards, set fares, or issue service alerts. For account, fare, card, lost property, or urgent travel questions, contact the relevant operator directly.',
     ],
   },
   '/privacy-policy': {
@@ -567,6 +574,7 @@ const INFO_PAGES = {
       'Google uses advertising cookies to help serve ads based on your prior visits to this and other websites. You can opt out of personalized advertising by visiting Google Ads Settings at https://adssettings.google.com, review Google advertising technologies at https://policies.google.com/technologies/ads, or use industry opt-out tools such as https://www.aboutads.info/choices.',
       'You can manage or delete cookies in your browser settings. Where required by law, including for visitors in the European Economic Area, the United Kingdom, and Switzerland, Fika Timetables will request consent before using cookies or identifiers for personalized advertising.',
       'The site does not require user accounts and does not ask for sensitive personal information. Contact hello@fikatimetables.co.za for privacy questions.',
+      'Route searches and saved timetable choices are handled in your browser unless they are needed to request timetable data from the server.',
     ],
   },
   '/terms': {
@@ -577,6 +585,7 @@ const INFO_PAGES = {
     body: [
       'Fika Timetables is provided as a commuter-friendly timetable viewer. Always confirm critical trips with the relevant transport operator.',
       'Timetable data can change, and Fika does not guarantee that every route, stop, or trip time is complete or current.',
+      'Fika is independent from Golden Arrow, MyCiTi, and other transport operators unless a future page says otherwise. Operator names and logos are used only to identify the timetable source or service being viewed.',
       'You may use the site for personal timetable lookup. Automated scraping or abusive request patterns are not permitted.',
     ],
   },
@@ -606,6 +615,10 @@ function getRouteLabel(route) {
 
 function getRouteDirections(route) {
   return [route.direction_1, route.direction_2].filter(Boolean);
+}
+
+function normalizeDirectionName(direction) {
+  return String(direction || '').replace(/^to\s+/i, '').trim();
 }
 
 function cleanAreaName(value) {
@@ -1016,43 +1029,6 @@ async function getRouteStops(routeId) {
   return rows;
 }
 
-async function getStopRouteAreas() {
-  const { rows } = await pool.query(`
-    WITH served_stop_routes AS (
-      SELECT DISTINCT
-        directions.route_id,
-        stops.name AS area_name
-      FROM stop_times
-      JOIN trips ON trips.id = stop_times.trip_id
-      JOIN directions ON directions.id = trips.direction_id
-      JOIN stops ON stops.id = stop_times.stop_id
-      WHERE COALESCE(stop_times.stop_time_type, '') != 'not_served'
-    ),
-    route_directions AS (
-      SELECT
-        route_id,
-        (ARRAY_AGG(direction ORDER BY direction))[1] AS direction_1,
-        (ARRAY_AGG(direction ORDER BY direction))[2] AS direction_2
-      FROM directions
-      GROUP BY route_id
-    )
-    SELECT
-      served_stop_routes.area_name,
-      routes.id,
-      routes.name,
-      routes.code,
-      routes.agency,
-      route_directions.direction_1,
-      route_directions.direction_2
-    FROM served_stop_routes
-    JOIN routes ON routes.id = served_stop_routes.route_id
-    JOIN route_directions ON route_directions.route_id = routes.id
-    WHERE routes.name != '';
-  `);
-
-  return rows;
-}
-
 function upsertArea(areaMap, areaName, route) {
   const normalizedName = cleanAreaName(areaName);
 
@@ -1088,15 +1064,11 @@ function finalizeAreas(areaMap) {
 }
 
 async function buildSeoData() {
-  const [routes, stopRoutes] = await Promise.all([getAllRoutes(), getStopRouteAreas()]);
+  const routes = await getAllRoutes();
   const areaMap = new Map();
 
   routes.forEach((route) => {
     getAreaNamesForRoute(route).forEach((areaName) => upsertArea(areaMap, areaName, route));
-  });
-
-  stopRoutes.forEach((row) => {
-    upsertArea(areaMap, row.area_name, row);
   });
 
   const areas = finalizeAreas(areaMap);
@@ -1165,6 +1137,44 @@ function renderAreaLinks(areas, className = 'seo-link-list') {
   )).join('')}</ul>`;
 }
 
+function renderStopList(stops) {
+  const uniqueStops = [...new Map(stops.map((stop) => [
+    `${cleanAreaName(stop.name)}|${stop.direction_name}`,
+    {
+      name: cleanAreaName(stop.name),
+      direction: normalizeDirectionName(stop.direction_name),
+    },
+  ])).values()]
+    .filter((stop) => stop.name)
+    .slice(0, MAX_ROUTE_STOPS);
+
+  if (!uniqueStops.length) {
+    return '<p>Stop details are not available for this timetable yet.</p>';
+  }
+
+  return `<ul class="seo-stop-list">${uniqueStops.map((stop) => (
+    `<li><span>${escapeHtml(stop.name)}</span>${stop.direction ? ` <small>${escapeHtml(stop.direction)}</small>` : ''}</li>`
+  )).join('')}</ul>`;
+}
+
+function renderRouteFacts(route, stops, serviceWindow) {
+  const directions = getRouteDirections(route).map(normalizeDirectionName).filter(Boolean);
+  const stopCount = new Set(stops.map((stop) => cleanAreaName(stop.name)).filter(Boolean)).size;
+  const firstTrip = formatTime(serviceWindow?.first_time) || 'Not listed';
+  const lastTrip = formatTime(serviceWindow?.last_time) || 'Not listed';
+
+  return `
+    <dl class="seo-fact-list">
+      <div><dt>Operator</dt><dd>${escapeHtml(getAgencyDisplayName(route.agency))}</dd></div>
+      <div><dt>Route</dt><dd>${escapeHtml(getRouteLabel(route))}</dd></div>
+      <div><dt>Directions</dt><dd>${escapeHtml(directions.join(' and ') || 'Direction details available in the timetable')}</dd></div>
+      <div><dt>Listed stops</dt><dd>${stopCount || 'Stop count unavailable'}</dd></div>
+      <div><dt>First listed trip</dt><dd>${escapeHtml(firstTrip)}</dd></div>
+      <div><dt>Last listed trip</dt><dd>${escapeHtml(lastTrip)}</dd></div>
+    </dl>
+  `;
+}
+
 function renderSiteFooter() {
   const links = [
     { href: '/operators/myciti', label: 'MyCiTi' },
@@ -1208,10 +1218,12 @@ function renderSeoShell({ eyebrow, title, description, sections = [] }) {
         ${sections.map((section) => `
           <section class="seo-section">
             <h2>${escapeHtml(section.title)}</h2>
+            ${(section.paragraphs || []).map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join('')}
             ${section.html}
           </section>
         `).join('')}
       </section>
+      ${renderSiteFooter()}
     </main>
   `;
 }
@@ -1229,13 +1241,27 @@ function renderHomeBody(routes = [], areas = []) {
     description: HOME_DESCRIPTION,
     sections: [
       {
+        title: 'Cape Town Timetable Lookup',
+        paragraphs: [
+          'Fika organizes loaded bus timetable data into route pages with operator names, direction labels, stop sequences, service days, and listed trip times. The site is built for practical commuter lookup rather than republishing static timetable PDFs.',
+          'Current coverage focuses on Golden Arrow and MyCiTi services in Cape Town. More South African cities and operators can be added when reliable route and timetable data is available.',
+        ],
+        html: '',
+      },
+      {
         title: 'Bus Operators',
+        paragraphs: [
+          'Start from an operator page when you already know whether the trip is served by Golden Arrow or MyCiTi.',
+        ],
         html: `<ul class="seo-link-list">${operatorSections.map((operator) => (
           `<li><a href="${escapeHtml(operator.path)}">${escapeHtml(operator.name)} timetables</a> <span>${operator.count} routes</span></li>`
         )).join('')}</ul>`,
       },
       {
         title: 'Popular Areas',
+        paragraphs: [
+          'Area pages group route names and direction labels into place-based timetable collections for easier local discovery.',
+        ],
         html: renderAreaLinks(areas.slice(0, MAX_AREA_LINKS)),
       },
     ],
@@ -1252,14 +1278,28 @@ function renderOperatorBody(agency, routes, areas) {
   return renderSeoShell({
     eyebrow: 'Cape Town bus operator',
     title: page.title,
-    description: page.description,
+    description: `${page.description} Fika is an independent timetable viewer and does not replace official operator notices.`,
     sections: [
       {
+        title: 'Timetable Coverage',
+        paragraphs: [
+          `This ${agencyName} page groups the routes currently loaded in Fika so commuters can move from an operator view to a specific timetable page with stop-by-stop times, direction labels, and service-day information.`,
+          `For fares, cards, accessibility, disruptions, and urgent service changes, check ${agencyName}${OPERATOR_SERVICE_URLS[agency] ? ` at ${OPERATOR_SERVICE_URLS[agency]}` : ''}.`,
+        ],
+        html: '',
+      },
+      {
         title: `${agencyName} Routes`,
+        paragraphs: [
+          `${routes.length} ${agencyName} route timetable${routes.length === 1 ? '' : 's'} are currently available in this index.`,
+        ],
         html: renderRouteLinks(routes),
       },
       {
         title: `${agencyName} Areas And Stops`,
+        paragraphs: [
+          'These area links are generated from loaded route names and direction labels, so some entries may represent an interchange, terminal, or corridor.',
+        ],
         html: renderAreaLinks(operatorAreas),
       },
     ],
@@ -1273,7 +1313,18 @@ function renderAreaBody(area) {
     description: `Find bus routes serving ${area.name} in Cape Town. View Golden Arrow and MyCiTi timetables by route, stop, and direction where available.`,
     sections: [
       {
+        title: 'Area Timetable Notes',
+        paragraphs: [
+          `This area page is built from route names and direction labels in the loaded timetable data. A route may appear for ${area.name} because it starts there, ends there, or links commuters to the area.`,
+          'Fika is independent from transport operators. Use these area links for planning and route discovery, then confirm urgent service changes through Golden Arrow or MyCiTi before travelling.',
+        ],
+        html: '',
+      },
+      {
         title: `Routes serving ${area.name}`,
+        paragraphs: [
+          `${area.routes.length} route timetable${area.routes.length === 1 ? '' : 's'} are currently associated with ${area.name}.`,
+        ],
         html: renderRouteLinks(area.routes),
       },
     ],
@@ -1287,7 +1338,18 @@ function renderAreasBody(areas) {
     description: 'Browse Golden Arrow and MyCiTi timetable pages by Cape Town area, stop, and route coverage.',
     sections: [
       {
+        title: 'How Areas Are Grouped',
+        paragraphs: [
+          'The area index groups loaded timetable data into place-based pages so commuters can discover routes by suburb, interchange, terminal, or corridor instead of only by route number.',
+          'Areas are generated from route names and direction names. Some names may represent a terminal, station, or corridor rather than a municipal suburb boundary.',
+        ],
+        html: '',
+      },
+      {
         title: 'Areas And Stops',
+        paragraphs: [
+          `${areas.length} Cape Town area and stop group${areas.length === 1 ? '' : 's'} are currently indexed.`,
+        ],
         html: renderAreaLinks(areas),
       },
     ],
@@ -1307,25 +1369,42 @@ function renderTimetableBody(route, stops, serviceWindow, relatedRoutes, indexed
     .filter(Boolean)
     .map((area) => [area.slug, area])).values()]
     .slice(0, MAX_ROUTE_STOP_LINKS);
-  const timeSummary = serviceWindow?.first_time && serviceWindow?.last_time
-    ? `Listed trips run from ${formatTime(serviceWindow.first_time)} to ${formatTime(serviceWindow.last_time)}.`
-    : 'Open the timetable to view service days, directions, stops, and listed trip times.';
-
   return renderSeoShell({
     eyebrow: `${agencyName} timetable`,
     title: `${agencyName} ${routeLabel} bus timetable`,
-    description: `${getTimetableDescription(route, serviceWindow)} ${timeSummary}`,
+    description: getTimetableDescription(route, serviceWindow),
     sections: [
       {
+        title: 'Timetable Summary',
+        paragraphs: [
+          `${agencyName} ${routeLabel} is shown with route directions, stops, and listed trip times where they are available in the timetable data.`,
+          'Fika is independent from transport operators. Always check official service notices for disruptions, fare changes, accessibility updates, and critical trips.',
+        ],
+        html: renderRouteFacts(route, stops, serviceWindow),
+      },
+      {
         title: 'Route Areas',
+        paragraphs: [
+          areas.length
+            ? `This timetable is associated with ${areas.map((area) => area.name).slice(0, 4).join(', ')}${areas.length > 4 ? ', and nearby areas' : ''}.`
+            : 'Area matches are generated from route and direction names when enough related timetable data is available.',
+        ],
         html: renderAreaLinks(areas),
       },
       {
         title: 'Stops On This Timetable',
-        html: renderAreaLinks(stopAreas),
+        paragraphs: [
+          stopAreas.length
+            ? `Some listed stops also have area pages, including ${stopAreas.map((area) => area.name).slice(0, 4).join(', ')}.`
+            : 'The stop list below is generated from the timetable rows for this route.',
+        ],
+        html: renderStopList(stops),
       },
       {
         title: 'Related Cape Town Routes',
+        paragraphs: [
+          'Related routes are selected from timetable areas that overlap with this route, which can help when comparing nearby services.',
+        ],
         html: renderRouteLinks(relatedRoutes),
       },
     ],

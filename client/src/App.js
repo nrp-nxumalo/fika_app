@@ -356,8 +356,9 @@ function LandingPage({
           <p className="landing-eyebrow">Cape Town bus timetables</p>
           <h1>Find the bus timetable you need.</h1>
           <p>
-            Search Golden Arrow and MyCiTi route timetables in one place. More South African cities
-            and provinces are planned for future releases.
+            Search Golden Arrow and MyCiTi route timetables in one place. Fika organizes route
+            names, directions, stops, and service-day patterns into pages that are easier to scan
+            than static timetable PDFs.
           </p>
         </div>
 
@@ -383,17 +384,6 @@ function LandingPage({
             Available now: {availableAgencies || 'Cape Town bus services'}.
           </p>
         </div>
-      </section>
-
-      <section className="landing-ad-band">
-        <AdSlot
-          adClient="ca-pub-6988683138579622"
-          adFormat="fluid"
-          adLayout="in-article"
-          adSlot="4341548768"
-          className="ad-slot-banner"
-          textAlign="center"
-        />
       </section>
 
       <section className="coverage-band" aria-label="Timetable coverage">
@@ -433,6 +423,32 @@ function LandingPage({
             {areaName}
           </a>
         ))}
+      </section>
+
+      <section className="commuter-guide-band" aria-label="Cape Town timetable notes">
+        <article>
+          <h2>Built for Cape Town bus commuters</h2>
+          <p>
+            Fika focuses on timetable lookup for local bus travel, with separate pages for
+            operators, areas, and individual routes. Each route page keeps the operator name,
+            route label, direction, stop sequence, and service days together.
+          </p>
+        </article>
+        <article>
+          <h2>Readable route pages</h2>
+          <p>
+            Timetable pages show the stops served by a route and the listed trip times for the
+            selected direction and day. When a timetable has been opened before, it can also be
+            saved in the browser for offline reference.
+          </p>
+        </article>
+        <article>
+          <h2>Independent timetable viewer</h2>
+          <p>
+            Fika is not an official transport operator. For fares, disruptions, cards, and urgent
+            service notices, check the relevant Golden Arrow or MyCiTi channels before travelling.
+          </p>
+        </article>
       </section>
     </main>
   );
