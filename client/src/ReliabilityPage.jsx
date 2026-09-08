@@ -52,7 +52,10 @@ function SourceRow({ source }) {
   return (
     <tr>
       <td>{source.operator === 'GABS' ? 'Golden Arrow' : 'MyCiTi'}</td>
-      <td><strong>{source.source_key}</strong><br />{source.route || 'Route not parsed'}</td>
+      <td><strong>{source.source_key}</strong><br />{source.route || 'Route not parsed'}
+        {source.section_mode && <small> · Document; see individual timetable sections above</small>}
+        {source.latest_document_check?.error && <p>Latest document check: {source.latest_document_check.error}</p>}
+        {(source.document_issues || []).map((issue, index) => <p key={index}>Document check: {issue.error}</p>)}</td>
       <td>{source.directions.length ? source.directions.join(' · ') : 'Not parsed'}</td>
       <td>{source.service_days.length
         ? source.service_days.map((day) => DAY_LABELS[day] || day).join(', ')
@@ -79,6 +82,7 @@ export default function ReliabilityPage() {
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('all');
   const [page, setPage] = useState(1);
+  const [sectionPage, setSectionPage] = useState(1);
 
   useEffect(() => {
     let ignore = false;
@@ -109,6 +113,12 @@ export default function ReliabilityPage() {
         .includes(normalizedQuery);
     });
   }, [query, report, status]);
+  const filteredSections = (report?.sections || []).filter(section =>
+    section.copies.some(copy => (status === 'all' || copy.status === status)
+      && `${section.timetable_number} ${copy.direction} ${copy.catalogue_key}`.toLowerCase().includes(query.trim().toLowerCase())));
+  const sectionPages = Math.max(1, Math.ceil(filteredSections.length / SOURCE_PAGE_SIZE));
+  const currentSectionPage = Math.min(sectionPage, sectionPages);
+  const visibleSections = filteredSections.slice((currentSectionPage - 1) * SOURCE_PAGE_SIZE, currentSectionPage * SOURCE_PAGE_SIZE);
   const pageCount = Math.max(1, Math.ceil(filteredSources.length / SOURCE_PAGE_SIZE));
   const currentPage = Math.min(page, pageCount);
   const visibleSources = filteredSources.slice(
@@ -160,6 +170,28 @@ export default function ReliabilityPage() {
             ) : null}
           </section>
 
+          {(report.sections || []).length > 0 && <section className="reliability-registry">
+            <h2>Golden Arrow timetable sections</h2>
+            <p>Each numbered timetable is checked independently. A document issue can affect one section while other sections remain available.</p>
+            {visibleSections.map(section => <details key={section.timetable_number}>
+              <summary>Timetable {section.timetable_number} · {section.copies[0]?.direction}</summary>
+              {section.conflicting_copies && <p>Copies differ across PDFs; source selection requires review.</p>}
+              {section.copies.map(copy => <div key={copy.section_id}>
+                <p><strong>{copy.own_route ? 'Own-route PDF' : 'Mixed PDF'}</strong> · {STATUS_LABELS[copy.status]}
+                  {copy.published ? ' · Published service available' : ''}</p>
+                {copy.official_source_url && <p><a href={copy.official_source_url}>Operator PDF</a> · Timetable {section.timetable_number}
+                  {copy.source_pages?.length ? ` · PDF pages ${copy.source_pages.join(', ')}` : ''}</p>}
+                {copy.parse_error && <p>Latest section could not be verified.</p>}
+                {copy.missing_from_document && <p>Absent from the latest complete PDF; awaiting review.</p>}
+              </div>)}
+            </details>)}
+            <div className="reliability-pagination">
+              <button disabled={currentSectionPage <= 1} onClick={() => setSectionPage(currentSectionPage - 1)}>Previous sections</button>
+              <span>Section page {currentSectionPage} of {sectionPages}</span>
+              <button disabled={currentSectionPage >= sectionPages} onClick={() => setSectionPage(currentSectionPage + 1)}>Next sections</button>
+            </div>
+          </section>}
+
           <section className="reliability-registry">
             <div className="reliability-registry-heading">
               <div>
@@ -170,10 +202,12 @@ export default function ReliabilityPage() {
                 <label>Find a route<input value={query} onChange={(event) => {
                   setQuery(event.target.value);
                   setPage(1);
+                  setSectionPage(1);
                 }} type="search" /></label>
                 <label>Status<select value={status} onChange={(event) => {
                   setStatus(event.target.value);
                   setPage(1);
+                  setSectionPage(1);
                 }}>
                   <option value="all">All</option>
                   <option value="verified">Verified</option>

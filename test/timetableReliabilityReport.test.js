@@ -64,6 +64,7 @@ test('public reliability report exposes provenance and keeps accuracy claims sco
       if (sql.includes('FROM timetable_source_events')) {
         return { rows: [] };
       }
+      if (sql.includes('FROM timetable_sections sections')) return { rows: [] };
       throw new Error(`Unexpected SQL: ${sql}`);
     },
   };

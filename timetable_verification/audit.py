@@ -32,10 +32,12 @@ class AuditCandidate:
     sample_kind: str
     footnote_markers: Tuple[str, ...]
     expected_departure: Optional[str] = None
+    section_version_id: Optional[int] = None
 
     def identity(self) -> Tuple[Any, ...]:
         return (
             self.source_version_id,
+            self.section_version_id,
             self.route_code,
             self.direction_name,
             self.service_day,
@@ -47,6 +49,7 @@ class AuditCandidate:
     def reconciliation_key(self) -> Tuple[Any, ...]:
         return (
             self.source_version_id,
+            self.section_version_id,
             self.route_code.casefold(),
             (self.direction_code or "").casefold(),
             self.direction_name.casefold(),
@@ -157,6 +160,7 @@ def build_extraction_candidates(
                                 AuditCandidate(
                                     source_id=int(version["source_id"]),
                                     source_version_id=int(version["source_version_id"]),
+                                    section_version_id=version.get("section_version_id"),
                                     operator=operator,
                                     route_code=str(route["code"]),
                                     route_name=str(route["name"]),
@@ -190,6 +194,7 @@ def reconcile_with_published(
     for row in published_rows:
         key = (
             int(row["source_version_id"]),
+            row.get("section_version_id"),
             str(row["route_code"]).casefold(),
             str(row.get("direction_code") or "").casefold(),
             str(row["direction_name"]).casefold(),

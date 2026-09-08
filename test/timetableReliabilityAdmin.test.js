@@ -4,6 +4,7 @@ const {
   actionToken,
   bulkApprovalIdentifier,
   comparisonSummary,
+  createTimetableReliabilityHandlers,
   getBulkUnchangedCandidates,
   isPendingVersionEffective,
   johannesburgDate,
@@ -256,4 +257,32 @@ test('admin page quarantines parser failures without offering publication', () =
   assert.match(html, /&lt;unexpected layout&gt;/);
   assert.doesNotMatch(html, /Approve and publish<\/button>/);
   assert.match(html, /captured PDF/);
+});
+
+test('section review signs independent actions and links physical page evidence and copy differences', () => {
+  const html = renderAdminPage({sources:[],checkRuns:[],audit:null,samples:[],sectionGroups:[{
+    timetable_number:'004901',preferred_section_id:1,preferred_version_id:10,conflicting_copies:true,
+    variants:[{copies:[{id:2,version_id:20,pending_version_id:20,content_sha256:'a'.repeat(64),
+      catalogue_key:'005001',status:'changed_review_required',direction_name:'<Tafelsig>',
+      effective_date:'2026-09-01',evidence:[{document_version_id:5,pages:[1,2]}]}]}],
+  }]}, 'secret');
+  assert.match(html, /sections\/2\/approve/);
+  assert.match(html, new RegExp(actionToken('secret','section-approve',`2:20:${'a'.repeat(64)}`)));
+  assert.match(html, /versions\/5\/pdf#page=1/);
+  assert.match(html, /pages 1, 2/);
+  assert.match(html, /comparison\?against=10/);
+  assert.match(html, /&lt;Tafelsig&gt;/);
+  assert.doesNotMatch(html, /sources\/bulk-approve/);
+});
+
+test('section evidence and mutations require authentication before database access', async () => {
+  const handlers = createTimetableReliabilityHandlers({database:{query(){throw Error('unexpected database access');}},
+    username:'reviewer',password:'secret'});
+  for (const name of ['sectionComparison','approveSection','withdrawSection']) {
+    const response = {headers:{},set(k,v){this.headers[k]=v;return this;},status(v){this.statusCode=v;return this;},
+      type(){return this;},send(){return this;}};
+    await handlers[name]({get:()=>'',params:{id:'1'},body:{}},response);
+    assert.equal(response.statusCode,401);
+    assert.equal(response.headers['Cache-Control'],'no-store');
+  }
 });

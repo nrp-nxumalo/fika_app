@@ -1818,6 +1818,9 @@ app.get('/admin/search-performance', createSearchPerformanceHandler({
 }));
 
 app.get('/admin/timetable-reliability', timetableReliabilityHandlers.report);
+app.get('/admin/timetable-reliability/section-versions/:id/comparison', timetableReliabilityHandlers.sectionComparison);
+app.post('/admin/timetable-reliability/sections/:id/approve', timetableReliabilityForm, timetableReliabilityHandlers.approveSection);
+app.post('/admin/timetable-reliability/sections/:id/withdraw', timetableReliabilityForm, timetableReliabilityHandlers.withdrawSection);
 app.get('/admin/timetable-reliability/versions/:id/pdf', timetableReliabilityHandlers.pdf);
 app.get('/admin/timetable-reliability/versions/:id/comparison', timetableReliabilityHandlers.comparison);
 app.post('/admin/timetable-reliability/sources/bulk-approve-unchanged', timetableReliabilityForm, timetableReliabilityHandlers.bulkApproveUnchanged);

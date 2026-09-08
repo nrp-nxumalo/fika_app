@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 import psycopg2
 import psycopg2.extras
 
-from . import IMPORT_VERSION, PARSER_VERSION
+from . import GABS_IMPORT_VERSION, IMPORT_VERSION, PARSER_VERSION
 from .adapters.base import DiscoveredSource
 from .audit import (
     DEFAULT_AUDIT_SAMPLE_SIZE,
@@ -73,6 +73,14 @@ class TimetableRepository:
         with self.connection:
             with self.connection.cursor() as cursor:
                 cursor.execute(sql)
+
+    def migrate_gabs_sections(self):
+        from .migrate_sections import migrate_gabs_sections
+        return migrate_gabs_sections(self)
+
+    def stage_document(self, **kwargs):
+        from .section_repository import stage_document
+        return stage_document(self, **kwargs)
 
     def start_check_run(self) -> int:
         with self.connection:
@@ -147,9 +155,9 @@ class TimetableRepository:
                     """
                     INSERT INTO timetable_sources (
                       operator, source_key, route_name, official_source_url,
-                      parser_version, import_version, last_seen_at
+                      parser_version, import_version, last_seen_at, section_mode
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, now())
+                    VALUES (%s, %s, %s, %s, %s, %s, now(), %s)
                     ON CONFLICT (operator, source_key) DO UPDATE SET
                       official_source_url = EXCLUDED.official_source_url,
                       route_name = CASE
@@ -167,7 +175,8 @@ class TimetableRepository:
                         source.route_name_hint,
                         source.url,
                         active_parser_version,
-                        self.import_version,
+                        GABS_IMPORT_VERSION if source.operator == "GABS" else self.import_version,
+                        source.operator == "GABS",
                     ),
                 )
                 return dict(cursor.fetchone())
@@ -1193,12 +1202,19 @@ class TimetableRepository:
         ) as cursor:
             cursor.execute(
                 """
-                SELECT s.id AS source_id, v.id AS source_version_id, v.extraction
+                SELECT s.id AS source_id, v.id AS source_version_id, v.extraction, NULL::bigint AS section_version_id
                 FROM timetable_sources s
                 JOIN timetable_source_versions v ON v.id = s.approved_version_id
                 WHERE v.review_status = 'approved'
-                  AND s.status <> 'withdrawn'
-                ORDER BY s.operator, s.source_key
+                  AND s.status <> 'withdrawn' AND NOT s.section_mode
+                UNION ALL
+                SELECT sections.source_id, versions.document_version_id AS source_version_id,
+                       versions.extraction, versions.id AS section_version_id
+                FROM timetable_section_versions versions
+                JOIN timetable_sections sections ON sections.id=versions.section_id
+                WHERE versions.id IN (SELECT DISTINCT timetable_section_version_id FROM trips
+                                      WHERE timetable_section_version_id IS NOT NULL)
+                ORDER BY source_id, source_version_id
                 """
             )
             return [dict(row) for row in cursor.fetchall()]
@@ -1214,6 +1230,7 @@ class TimetableRepository:
                 WITH published AS (
                   SELECT
                     trips.timetable_source_version_id AS source_version_id,
+                    trips.timetable_section_version_id AS section_version_id,
                     routes.code AS route_code,
                     directions.code AS direction_code,
                     directions.direction AS direction_name,
@@ -1363,7 +1380,7 @@ class TimetableRepository:
                       route_code, route_name, direction_code, direction_name,
                       direction_ordinal, service_day, trip_ordinal, stop_name,
                       stop_sequence, expected_departure, raw_departure,
-                      sample_kind, footnote_markers
+                      sample_kind, footnote_markers, section_version_id
                     ) VALUES %s
                     """,
                     [
@@ -1385,6 +1402,7 @@ class TimetableRepository:
                             item.raw_departure,
                             item.sample_kind,
                             list(item.footnote_markers),
+                            item.section_version_id,
                         )
                         for item in selected
                     ],

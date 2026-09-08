@@ -171,3 +171,32 @@ Set these secrets on the Render web service:
 Then open `/admin/search-performance`. The report uses HTTP Basic authentication and always returns `Cache-Control: no-store` and `X-Robots-Tag: noindex, nofollow`.
 
 After the route URL deployment, submit `/sitemap.xml` in Search Console and inspect the Atlantis and Mamre hubs plus routes 234, 246, and Golden Arrow 0004. Avoid further title changes for 28 days unless correcting a defect.
+
+### Daily trip views and independent GABS sections
+
+The selected day filters individual trips, including trips whose weekly patterns overlap. Columns sort by the first scheduled stop in stop order, then trip ID. Each header shows the first listed time, final served stop and operating days; its dialog lists the served stops. `via` remains an untimed passage and `--` means the trip does not serve that stop. Existing v2 and offline payloads need no conversion.
+
+GABS PDFs are document evidence, not publication units. `GabsAdapter.parse_document` returns `sections` (timetable number, physical PDF pages, canonical extraction/hash or local error), `issues` for uncertain document boundaries, and `complete`. Each canonical section contains one direction. Legends belong to that section and its continuation pages. `parse_pdf` remains a strict aggregate compatibility API; the daily checker and dry run use the section result. MyCiTi retains its route workflow and import version.
+
+`fika-gabs-parser/2.0.0` and `fika-gabs-sections/2.0.0` introduce section staging. `timetable_sections` stores per-document section state, `timetable_section_versions` stores immutable content and review history, and `timetable_section_observations` links unchanged content to every captured PDF. An unchanged section in a regenerated PDF supplies additional evidence without publication or another content review. Identical copies in separate catalogue documents share one logical change alert; selecting a different publishing source remains explicit. Explicit withdrawal still requires fresh review on reappearance. An audit mismatch also requires fresh review even if the PDF is unchanged.
+
+The admin page groups copies by timetable number and canonical content, with direct comparisons against the preferred copy. It prefers an own-route PDF, then the newest effective date. Equal-priority differences require an explicit revision choice. Source overrides apply only to that exact revision; replacement revisions require review. Small stored family fingerprints keep reliability lists from loading every stop-time extraction. Publication continues to compose weekday, Saturday, Sunday and public-holiday families independently. Source, document-version and section-version provenance are retained on trips and audit samples. Existing route names and URLs are preserved when a section is published.
+
+Rollout:
+
+1. The trip display can ship independently of the section backend.
+2. Deploy the additive schema and section-aware web/checker code together. Pause the old checker during the transition.
+3. Backfill approved GABS evidence with `python -m timetable_verification.migrate_sections --database-url "$DATABASE_URL"`. This uses the publication lock, preserves trip/stop-time IDs and times, validates trip provenance, then enables section mode. It is idempotent; the new checker also performs it before downloads.
+4. Reparse stored evidence with `python -m timetable_verification.reparse_sections`, then run `python -m timetable_verification.check_sources --operator gabs` for current downloads. Newly valid or changed sections enter independent review. In the supplied mixed example, 004901 can be approved without approving or modifying 005001.
+5. Review document issues and section comparisons in `/admin/timetable-reliability`; check `/api/reliability` for document diagnostics and section summaries. Approvals and withdrawals invalidate affected timetable caches and open audits.
+
+Recovery and rollback:
+
+- Failed downloads or incomplete parsing do not imply section withdrawal. Absence from a completely parsed PDF flags review and retains published service. Reparse captured evidence after fixing the parser; never manually edit an approved extraction.
+- To reverse a content choice, approve the reviewed replacement copy or withdraw that section copy; eligible approved contributions are restored. Conflicting fallback copies require explicit reviewer selection.
+- For a code rollback, pause the checker and section approval actions and keep the additive tables/provenance intact. Passenger timetable payloads and saved copies remain compatible with the older UI. Do not re-enable whole-document GABS publishing after section approvals: its approved bundle no longer represents all published section revisions. Restore a coordinated database backup before reverting that publication workflow.
+- Review events distinguish document checks, section approval/withdrawal and migration; no external alerts or automatic passenger-data publication are introduced.
+
+Run regression tests with the pinned Python dependencies, `npm test`, and `CI=true npm test --prefix client -- --watchAll=false --runInBand`. For actual PostgreSQL/Node transaction coverage, set `FIKA_SECTION_TEST_DSN` to an isolated test database and run `python -m unittest tests_python.test_sections_integration -v`; tests create and remove unique schemas. The supplied PDFs are stored as base64 fixtures. The integration tests cover independent approval, conflicting sources, withdrawal fallback, stale revisions, unchanged PDF evidence, audit provenance and migration idempotence.
+
+Reparse the latest captured PDFs without network access using `python -m timetable_verification.reparse_sections --source-key 004901` (omit the key for all captured GABS documents). This preserves the actual download timestamps and does not record a fresh catalogue check or publish any trips. It is useful when an official URL returns 404 after the evidence was captured.

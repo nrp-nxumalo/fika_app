@@ -310,11 +310,16 @@ def _parse_group(rows: Sequence[str]) -> Dict[str, Any]:
     parsed_rows: List[Tuple[str, List[str]]] = []
     max_columns = 0
     for row in rows:
+        if not row.rstrip().endswith('|'):
+            raise ParseError('GABS timetable contains an incomplete table row')
         columns = [column.strip() for column in row.split("|")[1:-1]]
         if not columns:
             continue
         stop = columns[0]
         times = columns[1:]
+        for raw in times:
+            if not normalize_time(raw) and raw.casefold() not in {'', '-', '--', 'via'}:
+                raise ParseError(f'GABS timetable contains an unrecognized cell {raw!r}')
         if not stop:
             raise ParseError("GABS timetable contains a blank stop name")
         parsed_rows.append((stop, times))
@@ -500,7 +505,7 @@ def _resolve_headerless_timetables(
                 raise ParseError(
                     f"{source_name}: printed timetable number must have six digits"
                 )
-            if normalized[:4] != route_code:
+            if normalized[:4] != route_code and any(not t.get("timetable_number") for t in timetables):
                 raise ParseError(
                     f"{source_name}: embedded route {normalized[:4]} does not match "
                     f"catalogue route {route_code}"
@@ -519,6 +524,13 @@ def _resolve_headerless_timetables(
             f"{normalized_source_key} cannot identify the direction of a "
             "headerless timetable section"
         )
+    if missing_indexes and len(timetables) > 1:
+        endpoints = []
+        for timetable in timetables:
+            parts = [part.strip().casefold() for part in timetable['route_title'].split(' - ') if part.strip()]
+            endpoints.append(frozenset((parts[0], parts[-1])))
+        if len(set(endpoints)) != 1:
+            raise ParseError(f'{source_name}: cannot prove headerless sections belong to one route; explicit timetable numbers are required')
     for index in missing_indexes:
         timetable = timetables[index]
         if not timetable.get("services"):
@@ -572,10 +584,16 @@ def _parse_pdf_timetables(
     except Exception as exc:
         raise ParseError(f"could not read GABS PDF {source_name}: {exc}") from exc
 
+    return _parse_timetable_lines(lines, source_name, source_key=source_key,
+                                  source_effective_date=source_effective_date)
+
+
+def _parse_timetable_lines(lines, source_name, *, source_key=None,
+                           source_effective_date=None, allow_headerless=False):
+    titles = {line.strip().upper() for line in lines if _is_probable_title(line)}
     parsed: List[Dict[str, Any]] = []
     current: Optional[Dict[str, Any]] = None
     current_service: Optional[str] = None
-    global_footnotes: Dict[str, str] = {}
 
     def finish_current() -> None:
         nonlocal current
@@ -664,21 +682,15 @@ def _parse_pdf_timetables(
                     break
                 marker = match.group(1).casefold()
                 text = " ".join(match.group(2).split())
-                if marker in global_footnotes and global_footnotes[marker] != text:
+                if marker in current["footnotes"] and current["footnotes"][marker] != text:
                     raise ParseError(
                         f"{source_name}: conflicting definition for GABS footnote {marker!r}"
                     )
                 current["footnotes"][marker] = text
-                global_footnotes[marker] = text
                 index += 1
         index += 1
     finish_current()
 
-    for timetable in parsed:
-        timetable["footnotes"] = {
-            **global_footnotes,
-            **timetable["footnotes"],
-        }
     if source_key is not None:
         _resolve_headerless_timetables(
             parsed,
@@ -686,7 +698,7 @@ def _parse_pdf_timetables(
             source_effective_date=source_effective_date,
             source_name=source_name,
         )
-    elif any(not timetable.get("timetable_number") for timetable in parsed):
+    elif not allow_headerless and any(not timetable.get("timetable_number") for timetable in parsed):
         raise ParseError(
             f"{source_name}: headerless timetable requires an official source key"
         )
@@ -856,89 +868,32 @@ class GabsAdapter(OperatorAdapter):
             for source_key in sorted(by_key)
         ]
 
-    def parse_pdf(
-        self,
-        source: DiscoveredSource,
-        pdf_bytes: bytes,
-    ) -> Dict[str, Any]:
-        source_name = Path(unquote(urlsplit(source.url).path)).name or source.source_key
-        normalized_source_key = normalize_source_key(source.source_key)
-        timetables = _parse_pdf_timetables(
-            pdf_bytes,
-            source_name,
-            source_key=normalized_source_key,
-            source_effective_date=_effective_date_from_source_name(source_name),
-        )
-        if not timetables:
-            raise ParseError(f"{source_name}: no GABS timetables were parsed")
-        matching = (
-            [
-                timetable
-                for timetable in timetables
-                if normalize_source_key(timetable["timetable_number"])
-                == normalized_source_key
-            ]
-            if len(normalized_source_key) == 6
-            else list(timetables)
-        )
-        if not matching or (len(normalized_source_key) == 6 and len(matching) != 1):
-            embedded = sorted(
-                normalize_source_key(timetable["timetable_number"])
-                for timetable in timetables
-            )
-            raise ParseError(
-                f"{source_name}: source key {normalized_source_key} matched {len(matching)} "
-                f"of embedded timetables {embedded}"
-            )
-        ordered_timetables = sorted(
-            timetables,
-            key=lambda timetable: normalize_source_key(timetable["timetable_number"]),
-        )
-        embedded_keys = [
-            normalize_source_key(timetable["timetable_number"])
-            for timetable in ordered_timetables
-        ]
-        if len(embedded_keys) != len(set(embedded_keys)):
-            raise ParseError(f"{source_name}: duplicate embedded GABS timetable numbers")
-        route_codes = {key[:4] for key in embedded_keys}
-        if len(route_codes) != 1:
-            raise ParseError(
-                f"{source_name}: expected one GABS route code, got {sorted(route_codes)}"
-            )
-        route_code = next(iter(route_codes))
-        directions: List[Dict[str, Any]] = []
-        for timetable, embedded_key in zip(ordered_timetables, embedded_keys):
-            services = [
-                _canonical_service(label, route, timetable["footnotes"])
-                for label, route in timetable["services"].items()
-            ]
-            directions.append(
-                {
-                    "code": embedded_key[4:],
-                    "name": timetable["route_title"],
-                    "effective_date": timetable["effective_date"],
-                    "services": services,
-                }
-            )
-        effective_dates = [
-            direction["effective_date"]
-            for direction in directions
-            if direction["effective_date"]
-        ]
-        matching_timetable = matching[0]
+    def parse_document(self, source: DiscoveredSource, pdf_bytes: bytes) -> Dict[str, Any]:
+        from timetable_verification.sections import parse_gabs_document
+        return parse_gabs_document(source, pdf_bytes)
+
+    def parse_pdf(self, source: DiscoveredSource, pdf_bytes: bytes) -> Dict[str, Any]:
+        """Strict aggregate compatibility API; the checker uses parse_document."""
+        document = self.parse_document(source, pdf_bytes)
+        failures = [s["error"] for s in document["sections"] if s.get("error")]
+        failures.extend(issue["error"] for issue in document["issues"])
+        if failures:
+            raise ParseError("; ".join(failures))
+        routes = {}
+        for section in document["sections"]:
+            route = section["extraction"]["routes"][0]
+            existing = routes.setdefault(route["code"], {**route, "directions": []})
+            existing["directions"].extend(route["directions"])
+            if section["timetable_number"] == source.source_key:
+                existing["name"] = route["name"]
+        if not routes:
+            raise ParseError("no GABS timetables were parsed")
         extraction = {
-            "schema_version": SCHEMA_VERSION,
-            "operator": self.operator,
-            "source_key": normalized_source_key,
-            "publication_scope": "service_days",
-            "effective_date": max(effective_dates) if effective_dates else None,
-            "routes": [
-                {
-                    "code": route_code,
-                    "name": _route_name(matching_timetable["route_title"]),
-                    "directions": directions,
-                }
-            ],
+            "schema_version": SCHEMA_VERSION, "operator": self.operator,
+            "source_key": source.source_key, "publication_scope": "service_days",
+            "effective_date": max((s["extraction"]["effective_date"] for s in document["sections"]
+                                   if s["extraction"]["effective_date"]), default=None),
+            "routes": list(routes.values()),
         }
         validate_extraction(extraction)
         return extraction

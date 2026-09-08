@@ -50,6 +50,8 @@ class DailyChecker:
 
     def run(self) -> Mapping[str, Any]:
         self.repository.ensure_schema()
+        if hasattr(self.repository, "migrate_gabs_sections"):
+            self.repository.migrate_gabs_sections()
         run_id = self.repository.start_check_run()
         counts = {
             "discovered": 0,
@@ -176,6 +178,34 @@ class DailyChecker:
                 counts["downloaded"] += 1
                 result["downloaded"] += 1
                 pdf_hash = sha256_bytes(response.body)
+                if adapter.operator == "GABS" and hasattr(adapter, "parse_document"):
+                    try:
+                        document = adapter.parse_document(source, response.body)
+                    except Exception as exc:
+                        document = {"sections": [], "issues": [{"error": str(exc), "pages": []}], "complete": False}
+                    staged = self.repository.stage_document(
+                        run_id=run_id, source=source, source_id=int(source_row["id"]),
+                        pdf_bytes=response.body, pdf_sha256=pdf_hash, document=document,
+                        http_etag=response.headers.get("etag"),
+                        http_last_modified=response.headers.get("last-modified"),
+                        parser_version=adapter.parser_version,
+                    )
+                    outcome = staged["outcome"]
+                    counts[outcome] += 1
+                    result[outcome] += 1
+                    for field in ("changed", "unchanged", "failed"):
+                        result["sections_" + field] = result.get("sections_" + field, 0) + staged[field]
+                    if staged["failed"]:
+                        counts["failed"] += 1
+                        result["failed"] += 1
+                    self.repository.record_check_result(
+                        run_id=run_id, source=source, source_id=int(source_row["id"]),
+                        outcome="failed" if staged["failed"] else outcome,
+                        http_status=response.status, pdf_sha256=pdf_hash,
+                        duration_ms=max(0, int((time.monotonic() - started) * 1000)),
+                        error="One or more document sections need attention." if staged["failed"] else None,
+                    )
+                    continue
                 try:
                     extraction = adapter.parse_pdf(source, response.body)
                 except Exception as parse_error:
@@ -270,6 +300,14 @@ def dry_run(
         for source in sources:
             try:
                 response = requester.get_pdf(source.url, referer=source.catalogue_page)
+                if adapter.operator == "GABS" and hasattr(adapter, "parse_document"):
+                    document = adapter.parse_document(source, response.body)
+                    failures += sum(bool(s.get("error")) for s in document["sections"]) + len(document["issues"])
+                    summaries.append({"source_key": source.source_key, "url": source.url,
+                        "pdf_sha256": sha256_bytes(response.body), "issues": document["issues"],
+                        "sections": [{k: v for k, v in section.items() if k != "extraction"}
+                                     for section in document["sections"]]})
+                    continue
                 extraction = adapter.parse_pdf(source, response.body)
                 summaries.append(
                     {

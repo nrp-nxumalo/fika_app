@@ -30,12 +30,14 @@ def _structural_inventory(extraction: Optional[Mapping[str, Any]]) -> Dict[str, 
             "service_days": [],
             "stops": [],
             "footnotes": [],
+            "trip_patterns": [],
         }
     routes: List[Dict[str, Any]] = []
     directions: List[Dict[str, Any]] = []
     service_days: List[Dict[str, Any]] = []
     stops: List[Dict[str, Any]] = []
     footnotes: List[Dict[str, Any]] = []
+    trip_patterns = []
     for route_ordinal, route in enumerate(extraction.get("routes", []), start=1):
         route_ref = {
             "route_ordinal": route_ordinal,
@@ -76,12 +78,18 @@ def _structural_inventory(extraction: Optional[Mapping[str, Any]]) -> Dict[str, 
                         for cell in trips[0].get("times", [])
                     ]
                 stops.append({**context, "stops": stop_rows})
+                trip_patterns.append({**context, "trips": [
+                    {"service_days": trip.get("service_days", service["service_days"]),
+                     "markers": trip.get("footnote_markers", []),
+                     "stops": [cell.get("stop_time_type") for cell in trip.get("times", [])]}
+                    for trip in trips]})
     return {
         "routes": routes,
         "directions": directions,
         "service_days": service_days,
         "stops": stops,
         "footnotes": footnotes,
+        "trip_patterns": trip_patterns,
     }
 
 
@@ -120,7 +128,7 @@ def compare_extractions(
     previous_structure = _structural_inventory(previous)
     current_structure = _structural_inventory(current)
     structural_changes: Dict[str, Dict[str, Any]] = {}
-    for category in ("routes", "directions", "service_days", "stops", "footnotes"):
+    for category in ("routes", "directions", "service_days", "stops", "footnotes", "trip_patterns"):
         before = previous_structure[category]
         after = current_structure[category]
         structural_changes[category] = {

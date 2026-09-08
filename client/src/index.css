@@ -2080,3 +2080,23 @@ input:checked + label {
     color: #fff;
   }
 }
+
+/* Trip headers retain the selected day's chronological order and expose each journey. */
+.selected-day-summary h2 { font-size: 20px; margin: 6px 0; }
+.selected-day-summary p { font-size: 13px; margin: 4px 0 10px; }
+.timetable th.trip-heading { padding: 0; height: auto; white-space: normal; }
+.trip-heading-button { background: transparent; border: 0; color: inherit; cursor: pointer; display: flex; flex-direction: column; gap: 5px; align-items: center; width: 100%; min-height: 128px; padding: 10px 6px; font: inherit; }
+.trip-heading-button > strong { font-size: 18px; }
+.trip-destination { font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
+.trip-operating-days { font-size: 10px; text-transform: none; }
+.trip-details-hint { font-size: 10px; text-decoration: underline; text-transform: none; }
+.trip-heading-button:focus-visible, .trip-details-close:focus-visible { outline: 3px solid var(--color-text); outline-offset: -3px; }
+.trip-details-dialog { background: var(--color-surface, white); color: var(--color-text, #17211b); border: 1px solid var(--color-border, #ccc); border-radius: 12px; box-sizing: border-box; padding: 24px; width: min(540px, calc(100vw - 24px)); max-height: calc(100dvh - 40px); overflow: auto; }
+.trip-details-dialog::backdrop { background: #0009; }
+.trip-details-dialog h2 { font-size: 22px; padding-right: 60px; }
+.trip-details-close { float: right; min-height: 44px; padding: 8px 14px; cursor: pointer; }
+.trip-stop-list { padding-left: 22px; }
+.trip-stop-list li { padding: 10px 4px; border-bottom: 1px solid var(--color-border, #ccc); }
+.trip-stop-list li span { display: inline-block; width: calc(100% - 65px); vertical-align: top; }
+.trip-stop-list li strong { display: inline-block; width: 65px; text-align: right; }
+.trip-legend { font-size: 13px; line-height: 1.6; }

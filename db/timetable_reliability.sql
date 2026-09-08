@@ -104,6 +104,8 @@ CREATE TABLE IF NOT EXISTS timetable_source_check_results (
 
 CREATE INDEX IF NOT EXISTS idx_timetable_check_results_run
   ON timetable_source_check_results (check_run_id, operator, source_key);
+CREATE INDEX IF NOT EXISTS idx_timetable_check_results_source
+  ON timetable_source_check_results (source_id, checked_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS timetable_source_events (
   id bigserial PRIMARY KEY,
@@ -213,3 +215,56 @@ CREATE INDEX IF NOT EXISTS idx_trips_timetable_source
   ON trips (timetable_source_id, timetable_service_family);
 CREATE INDEX IF NOT EXISTS idx_trips_timetable_source_version
   ON trips (timetable_source_version_id, timetable_trip_ordinal);
+
+-- Documents remain immutable evidence; GABS review/publication lives on sections.
+ALTER TABLE timetable_sources ADD COLUMN IF NOT EXISTS section_mode boolean NOT NULL DEFAULT false;
+ALTER TABLE timetable_source_versions ADD COLUMN IF NOT EXISTS document_issues jsonb NOT NULL DEFAULT '[]'::jsonb;
+CREATE TABLE IF NOT EXISTS timetable_sections (
+  id bigserial PRIMARY KEY,
+  source_id bigint NOT NULL REFERENCES timetable_sources(id) ON DELETE RESTRICT,
+  timetable_number text NOT NULL CHECK (timetable_number ~ '^[0-9]{6}$'),
+  status text NOT NULL DEFAULT 'changed_review_required' CHECK (status IN ('verified','changed_review_required','withdrawn')),
+  approved_version_id bigint,
+  pending_version_id bigint,
+  last_seen_document_version_id bigint REFERENCES timetable_source_versions(id),
+  missing_from_document boolean NOT NULL DEFAULT false,
+  audit_review_required boolean NOT NULL DEFAULT false,
+  last_manually_verified_on date,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (source_id, timetable_number)
+);
+CREATE TABLE IF NOT EXISTS timetable_section_versions (
+  id bigserial PRIMARY KEY,
+  section_id bigint NOT NULL REFERENCES timetable_sections(id) ON DELETE RESTRICT,
+  document_version_id bigint NOT NULL REFERENCES timetable_source_versions(id) ON DELETE RESTRICT,
+  previous_version_id bigint REFERENCES timetable_section_versions(id),
+  content_sha256 text NOT NULL CHECK (content_sha256 ~ '^[0-9a-f]{64}$'),
+  extraction jsonb,
+  parse_error text,
+  review_summary jsonb NOT NULL DEFAULT '{}'::jsonb,
+  source_pages integer[] NOT NULL DEFAULT '{}',
+  comparison jsonb NOT NULL DEFAULT '{}'::jsonb,
+  review_status text NOT NULL DEFAULT 'pending' CHECK (review_status IN ('pending','approved','rejected','superseded')),
+  approved_by text,
+  approved_at timestamptz,
+  review_note text,
+  published_at timestamptz,
+  source_override boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CHECK ((extraction IS NULL) <> (parse_error IS NULL))
+);
+CREATE TABLE IF NOT EXISTS timetable_section_observations (
+  section_version_id bigint NOT NULL REFERENCES timetable_section_versions(id) ON DELETE RESTRICT,
+  document_version_id bigint NOT NULL REFERENCES timetable_source_versions(id) ON DELETE RESTRICT,
+  source_pages integer[] NOT NULL DEFAULT '{}',
+  PRIMARY KEY (section_version_id, document_version_id)
+);
+CREATE INDEX IF NOT EXISTS idx_timetable_sections_number ON timetable_sections(timetable_number);
+CREATE INDEX IF NOT EXISTS idx_timetable_section_versions_section ON timetable_section_versions(section_id, id);
+ALTER TABLE trips ADD COLUMN IF NOT EXISTS timetable_section_version_id bigint REFERENCES timetable_section_versions(id);
+CREATE INDEX IF NOT EXISTS idx_trips_timetable_section_version ON trips(timetable_section_version_id);
+ALTER TABLE timetable_audit_samples ADD COLUMN IF NOT EXISTS section_version_id bigint REFERENCES timetable_section_versions(id);
+
+ALTER TABLE timetable_sections ADD COLUMN IF NOT EXISTS audit_review_required boolean NOT NULL DEFAULT false;
+ALTER TABLE timetable_section_versions ADD COLUMN IF NOT EXISTS review_summary jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE timetable_section_versions DROP CONSTRAINT IF EXISTS timetable_section_versions_section_id_document_version_id_key;

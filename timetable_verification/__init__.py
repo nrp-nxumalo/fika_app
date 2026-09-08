@@ -7,8 +7,9 @@ never writes to Fika's production route, direction, trip, or stop-time rows.
 
 SCHEMA_VERSION = 1
 PARSER_VERSION = "fika-timetable-parser/1.0.0"
-GABS_PARSER_VERSION = "fika-gabs-parser/1.1.0"
+GABS_PARSER_VERSION = "fika-gabs-parser/2.0.0"
 IMPORT_VERSION = "fika-timetable-canonical/1.0.0"
+GABS_IMPORT_VERSION = "fika-gabs-sections/2.0.0"
 
 __all__ = [
     "GABS_PARSER_VERSION",

@@ -483,7 +483,7 @@ test('MyCiTi route-scope approval replaces all directions and commits metadata a
 
   const insertDirection = database.calls.find((call) => /^INSERT INTO directions /.test(call.text));
   assert.deepEqual(insertDirection.params.slice(-2), [1, 10]);
-  assert.deepEqual(database.insertedTrips[0].slice(9), [1, 10, '2026-08-10', null, 1]);
+  assert.deepEqual(database.insertedTrips[0].slice(9), [1, 10, '2026-08-10', null, 1, null]);
   assert.ok(database.calls.some((call) => /^UPDATE timetable_source_versions /.test(call.text)));
   assert.ok(database.calls.some((call) => /^UPDATE timetable_sources /.test(call.text)));
   assert.ok(database.calls.some((call) => call.params.includes('source_approved')));
@@ -636,7 +636,7 @@ test('GABS approval replaces only candidate service families and preserves regul
   assert.equal(database.calls.some((call) => /^DELETE FROM directions WHERE id = ANY/.test(call.text)), false);
 
   assert.equal(database.insertedTrips.length, 1);
-  assert.deepEqual(database.insertedTrips[0].slice(6), [false, false, true, 1, 10, '2026-08-10', 'public_holiday', 1]);
+  assert.deepEqual(database.insertedTrips[0].slice(6), [false, false, true, 1, 10, '2026-08-10', 'public_holiday', 1, null]);
   const insertedStopTimes = database.calls.find((call) => /^INSERT INTO stop_times /.test(call.text));
   assert.equal(JSON.parse(insertedStopTimes.params[0])[0].departure, '09:05');
 });
@@ -673,7 +673,7 @@ test('newest child direction effective date deterministically wins an overlappin
   });
 
   await approvePendingVersion(database, approvalOptions());
-  assert.deepEqual(database.insertedTrips[0].slice(9), [2, 20, '2026-08-12', 'public_holiday', 1]);
+  assert.deepEqual(database.insertedTrips[0].slice(9), [2, 20, '2026-08-12', 'public_holiday', 1, null]);
   const insertedStopTimes = database.calls.find((call) => /^INSERT INTO stop_times /.test(call.text));
   assert.equal(JSON.parse(insertedStopTimes.params[0])[0].departure, '09:15');
 });
@@ -901,7 +901,7 @@ test('GABS withdrawal removes that source family and restores the next-newest ap
   assert.deepEqual(result.directionIds, []);
   const tripDeletion = database.calls.find((call) => /^DELETE FROM trips WHERE id = ANY/.test(call.text));
   assert.deepEqual(tripDeletion.params[0], [401]);
-  assert.deepEqual(database.insertedTrips[0].slice(9), [2, 20, '2026-08-01', 'public_holiday', 1]);
+  assert.deepEqual(database.insertedTrips[0].slice(9), [2, 20, '2026-08-01', 'public_holiday', 1, null]);
   const insertedStopTimes = database.calls.find((call) => /^INSERT INTO stop_times /.test(call.text));
   assert.equal(JSON.parse(insertedStopTimes.params[0])[0].departure, '08:55');
   assert.equal(database.calls.some((call) => /^DELETE FROM directions WHERE id = ANY/.test(call.text)), false);
@@ -943,7 +943,7 @@ test('GABS withdrawal uses production provenance when its approved extraction is
   });
 
   assert.deepEqual(result.routeIds, [50]);
-  assert.deepEqual(database.insertedTrips[0].slice(9), [2, 20, '2026-08-01', 'public_holiday', 1]);
+  assert.deepEqual(database.insertedTrips[0].slice(9), [2, 20, '2026-08-01', 'public_holiday', 1, null]);
   assert.match(
     database.calls.find((call) => /^UPDATE timetable_sources /.test(call.text)).text,
     /approved_version_id = NULL/
