@@ -182,6 +182,8 @@ GABS PDFs are document evidence, not publication units. `GabsAdapter.parse_docum
 
 The admin page groups copies by timetable number and canonical content, with direct comparisons against the preferred copy. It prefers an own-route PDF, then the newest effective date. Equal-priority differences require an explicit revision choice. Source overrides apply only to that exact revision; replacement revisions require review. Small stored family fingerprints keep reliability lists from loading every stop-time extraction. Publication continues to compose weekday, Saturday, Sunday and public-holiday families independently. Source, document-version and section-version provenance are retained on trips and audit samples. Existing route names and URLs are preserved when a section is published.
 
+The review page shows 10 sources and 10 timetable groups per page, with 25 and 50 available. Search, operator, status and review-queue filters apply to both lists, and candidates ready for approval appear first by default. Each timetable group keeps its copies together for comparison. Pagination and review actions preserve the filters; bulk unchanged approval applies only to eligible sources on the visible page.
+
 Rollout:
 
 1. The trip display can ship independently of the section backend.

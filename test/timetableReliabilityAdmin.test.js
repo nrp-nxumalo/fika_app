@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { normalizeQuery, reviewReturnUrl } = require('../lib/reliabilityReviewQueue');
 const {
   actionToken,
   bulkApprovalIdentifier,
@@ -11,6 +12,122 @@ const {
   renderAdminPage,
   secureEqual,
 } = require('../lib/timetableReliabilityAdmin');
+
+function reviewSource(id, overrides = {}) {
+  return { id, operator: 'MyCiti', source_key: `route-${id}`, route_name: `Route ${id}`,
+    status: 'changed_review_required', pending_version_id: id + 100,
+    pending_pdf_sha256: String(id).padStart(64, 'a'),
+    pending_comparison: { has_changes: false, changed_time_count: 0, added_time_count: 0, removed_time_count: 0 },
+    ...overrides };
+}
+
+function reviewPage(sources, query = {}, sectionGroups = []) {
+  return renderAdminPage({ sources, query, sectionGroups, checkRuns: [], audit: null, samples: [] }, 'secret');
+}
+
+test('review defaults to ten rows with publishable sources before blocked and future candidates', () => {
+  const sources = [
+    reviewSource(1, { pending_comparison: { parse_error: 'bad PDF' } }),
+    reviewSource(2, { pending_source_effective_date: '2099-01-01' }),
+    reviewSource(3, { section_mode: true }),
+    ...Array.from({ length: 11 }, (_, i) => reviewSource(i + 4)),
+  ];
+  const html = reviewPage(sources);
+  assert.match(html, /1–10 of 14 sources/);
+  assert.match(html, /sources\/4\/approve/);
+  assert.match(html, /sources\/13\/approve/);
+  assert.doesNotMatch(html, /sources\/(1|2|3|14)\/(approve|withdraw)/);
+  assert.match(html, /source_page=2/);
+  const next = reviewPage(sources, { source_page: '2' });
+  assert.match(next, /11–14 of 14 sources/);
+  assert.ok(next.indexOf('sources/14/approve') < next.indexOf('sources/1/withdraw'));
+});
+
+test('filters combine search, operator, status and readiness before pagination', () => {
+  const sources = [reviewSource(1, { route_name: 'Cape Town' }),
+    reviewSource(2, { route_name: 'Cape Town', operator: 'GABS' }),
+    reviewSource(3, { route_name: 'Cape Town', pending_comparison: { parse_error: 'bad PDF' } }),
+    reviewSource(4, { route_name: 'Cape Town', status: 'verified' }), reviewSource(5)];
+  const html = reviewPage(sources, { q: 'cApE', operator: 'MyCiti', review: 'ready', status: 'changed_review_required', source_page: '99' });
+  assert.match(html, /1–1 of 1 sources/);
+  assert.match(html, /sources\/1\/approve/);
+  assert.doesNotMatch(html, /sources\/[2-5]\/approve/);
+  assert.match(html, /name="return_query" value="q=cApE&amp;operator=MyCiti/);
+  assert.match(html, /source_page=1/);
+  assert.match(reviewPage(sources, { q: 'unmatched' }), /0–0 of 0 sources/);
+  assert.match(reviewPage(sources, { q: 'unmatched' }), /No sources match these filters/);
+});
+
+test('pagination preserves filters, supports page sizes and deterministic source sorting', () => {
+  const sources = Array.from({ length: 31 }, (_, i) => reviewSource(31 - i));
+  const html = reviewPage(sources, { q: 'route', operator: 'MyCiti', per_page: '25', sort: 'source' });
+  assert.match(html, /1–25 of 31 sources/);
+  assert.ok(html.indexOf('sources/2/approve') < html.indexOf('sources/10/approve'));
+  assert.match(html, /q=route&amp;operator=MyCiti&amp;status=&amp;review=&amp;sort=source&amp;per_page=25&amp;source_page=2/);
+  assert.doesNotMatch(html, /sources\/26\/approve/);
+});
+
+test('bulk approval is signed for only the visible eligible source revisions', () => {
+  const sources = Array.from({ length: 12 }, (_, i) => reviewSource(i + 1));
+  const html = reviewPage(sources, { source_page: '2' });
+  assert.match(html, /name="candidate_ids" value="\[11,12\]"/);
+  assert.match(html, /Approve and publish 2 unchanged routes on this page/);
+  assert.match(html, new RegExp(actionToken('secret', 'bulk-approve-unchanged',
+    bulkApprovalIdentifier(getBulkUnchangedCandidates(sources.slice(10))))));
+});
+
+test('section pagination keeps all copies together and prioritizes ready groups', () => {
+  const groups = Array.from({ length: 12 }, (_, i) => ({ timetable_number: String(i + 1).padStart(6, '0'),
+    conflicting_copies: i === 0, variants: [{ copies: [{ id: i + 1, version_id: i + 101,
+      pending_version_id: i + 101, catalogue_key: '001001', direction_name: 'Cape Town',
+      status: 'changed_review_required', effective_date: '2026-01-01' }] }] }));
+  groups[1].variants[0].copies.push({ ...groups[1].variants[0].copies[0], id: 99, catalogue_key: '009901' });
+  const html = reviewPage([], {}, groups);
+  assert.match(html, /1–10 of 12 timetable sections/);
+  assert.match(html, /sections\/2\/approve/);
+  assert.match(html, /sections\/99\/approve/);
+  assert.doesNotMatch(html, /sections\/(1|12)\/approve/);
+  assert.match(reviewPage([], { q: '009901' }, groups), /sections\/2\/approve/);
+  assert.match(reviewPage([], { review: 'conflict' }, groups), /1–1 of 1 timetable sections/);
+  assert.match(reviewPage([], { operator: 'MyCiti' }, groups), /0–0 of 0 timetable sections/);
+  assert.match(reviewPage([], { section_page: '2' }, groups), /11–12 of 12 timetable sections/);
+});
+
+test('untrusted query parameters are bounded, escaped and cannot redirect away from review', () => {
+  assert.equal(normalizeQuery({ source_page: '-3', per_page: '100000', sort: ['ready'], q: {} }).source_page, '1');
+  assert.equal(normalizeQuery({ per_page: '100000' }).per_page, '10');
+  const html = reviewPage([], { q: '\"><script>alert(1)</script>' });
+  assert.doesNotMatch(html, /<script>/);
+  assert.match(html, /&lt;script&gt;/);
+  assert.ok(reviewReturnUrl('https://evil.example/?q=test').startsWith('/admin/timetable-reliability?'));
+  assert.match(reviewReturnUrl('q=route&source_page=2'), /q=route.*source_page=2/);
+  assert.match(reviewReturnUrl('section_page=2', 'sections'), /section_page=2#sections$/);
+});
+
+test('future-effective sections are excluded from ready reviews and cannot be published from the page', () => {
+  const groups = [{ timetable_number: '001001', variants: [{ copies: [{ id: 1, version_id: 2,
+    pending_version_id: 2, effective_date: '2099-01-01', catalogue_key: '001001' }] }] }];
+  assert.match(reviewPage([], {}, groups), /disabled>Approve copy and publish/);
+  assert.match(reviewPage([], { review: 'ready' }, groups), /0–0 of 0 timetable sections/);
+  assert.match(reviewPage([], { review: 'future' }, groups), /1–1 of 1 timetable sections/);
+});
+
+test('bulk selection rejects tampered, duplicate and stale visible candidates before publication', async () => {
+  const sources = [reviewSource(1), reviewSource(2)];
+  const database = { async query(sql) {
+    if (sql.includes('CREATE TABLE')) return { rows: [] };
+    if (sql.includes('FROM timetable_sources AS sources')) return { rows: sources };
+    throw Error('Unexpected publication query');
+  } };
+  const handlers = createTimetableReliabilityHandlers({ database, username: 'reviewer', password: 'secret' });
+  const token = actionToken('secret', 'bulk-approve-unchanged', bulkApprovalIdentifier(getBulkUnchangedCandidates([sources[0]])));
+  for (const [ids, expected] of [['[1,2]', 409], ['[1,1]', 400], ['[3]', 409], ['{}', 400]]) {
+    const response = { set() { return this; }, status(code) { this.code = code; return this; }, type() { return this; }, send() { return this; } };
+    await handlers.bulkApproveUnchanged({ get: () => `Basic ${Buffer.from('reviewer:secret').toString('base64')}`,
+      body: { candidate_ids: ids, token } }, response);
+    assert.equal(response.code, expected);
+  }
+});
 
 test('manual verification dates use the Cape Town calendar day', () => {
   assert.equal(johannesburgDate(new Date('2026-08-16T22:30:00Z')), '2026-08-17');
