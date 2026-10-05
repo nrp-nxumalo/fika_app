@@ -184,6 +184,33 @@ class DailyCheckerTest(unittest.TestCase):
         self.assertEqual(operator["failed"], 1)
         self.assertIn("no sources were marked missing", operator["catalogue_coverage_error"])
 
+    def test_automation_runs_after_staging_and_before_audit(self):
+        order = []
+        class Repository(FakeRepository):
+            def review_gabs_timetables(self, run_id, operator_result):
+                self.asserted_count = len(self.staged)
+                order.append('automation')
+                return {'automatic': 1, 'failed': 0}
+            def ensure_weekly_audit_plan(self, **kwargs):
+                order.append('audit')
+                return super().ensure_weekly_audit_plan(**kwargs)
+        repository = Repository()
+        result = DailyChecker(repository=repository, requester=FakeRequester(),
+            adapters=[FakeAdapter('GABS'), FakeAdapter('MyCiti')]).run()
+        self.assertEqual(order, ['automation', 'audit'])
+        self.assertEqual(repository.asserted_count, 2)
+        self.assertEqual(result['operator_results']['gabs_automation']['automatic'], 1)
+
+    def test_automation_failure_is_reported_and_audit_still_runs(self):
+        class Repository(FakeRepository):
+            def review_gabs_timetables(self, *args):
+                raise RuntimeError('publisher unavailable')
+        result = DailyChecker(repository=Repository(), requester=FakeRequester(),
+            adapters=[FakeAdapter('GABS')]).run()
+        self.assertEqual(result['status'], 'partial_failure')
+        self.assertIn('weekly_audit', result['operator_results'])
+        self.assertEqual(result['operator_results']['gabs_automation']['failed'], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

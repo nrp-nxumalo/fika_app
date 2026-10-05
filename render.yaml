@@ -5,7 +5,7 @@ services:
     # 01:17 UTC is 03:17 in Johannesburg.  The non-round minute avoids the
     # busiest cron boundary while keeping the check in a low-traffic window.
     schedule: "17 1 * * *"
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && npm ci --omit=dev
     startCommand: python -m timetable_verification.check_sources
     envVars:
       - key: DATABASE_URL
@@ -16,6 +16,8 @@ services:
         value: "0.25"
       - key: TIMETABLE_AUDIT_SAMPLE_SIZE
         value: "200"
+      - key: GABS_AUTO_APPROVE
+        value: "1"
 
   - type: cron
     name: fika-gsc-weekly

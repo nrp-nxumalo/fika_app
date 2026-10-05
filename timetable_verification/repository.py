@@ -82,6 +82,39 @@ class TimetableRepository:
         from .section_repository import stage_document
         return stage_document(self, **kwargs)
 
+    def review_gabs_timetables(self, run_id, operator_result):
+        """Run the shared Node publication policy after all catalogue staging."""
+        import os
+        import subprocess
+        with self.connection:
+            with self.connection.cursor() as cursor:
+                cursor.execute("""UPDATE timetable_source_check_runs SET operator_results=
+                    jsonb_set(operator_results,'{GABS}',%s::jsonb) WHERE id=%s""",
+                    (json.dumps(operator_result), run_id))
+        publish = os.environ.get('GABS_AUTO_APPROVE', '0') == '1'
+        config = self.connection.get_dsn_parameters()
+        node_config = {key: config[key] for key in ('host', 'port', 'user', 'password', 'options') if config.get(key)}
+        node_config['database'] = config.get('dbname')
+        # get_dsn_parameters deliberately omits the password.
+        dsn = psycopg2.extensions.parse_dsn(self.connection.dsn)
+        if dsn.get('password'):
+            node_config['password'] = dsn['password']
+        if config.get('sslmode') in ('require', 'verify-ca', 'verify-full'):
+            node_config['ssl'] = True
+        result = subprocess.run(
+            ['node', 'scripts/review-gabs-timetables.js', f'--run-id={run_id}',
+             '--publish' if publish else '--record-only'],
+            cwd=DEFAULT_SCHEMA_PATH.parents[1],
+            env={**os.environ, 'FIKA_GABS_DATABASE_CONFIG': json.dumps(node_config)},
+            capture_output=True, text=True, timeout=1800, check=False)
+        try:
+            summary = json.loads(result.stdout)
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError('GABS review runner failed: ' + result.stderr[-2000:]) from exc
+        if result.returncode and not summary.get('failed'):
+            raise RuntimeError('GABS review runner failed: ' + result.stderr[-2000:])
+        return summary
+
     def start_check_run(self) -> int:
         with self.connection:
             with self.connection.cursor() as cursor:

@@ -175,10 +175,14 @@ export default function ReliabilityPage() {
             <p>Each numbered timetable is checked independently. A document issue can affect one section while other sections remain available.</p>
             {visibleSections.map(section => <details key={section.timetable_number}>
               <summary>Timetable {section.timetable_number} · {section.copies[0]?.direction}</summary>
+              {section.review_disposition && <p>{({ automatic: 'Automatically updated', scheduled: 'Scheduled for its effective date',
+                needs_review: 'Needs review', eligible: 'Safe update awaiting publication', current: 'Current', withdrawn: 'Withdrawn' })[section.review_disposition]}</p>}
               {section.conflicting_copies && <p>Copies differ across PDFs; source selection requires review.</p>}
               {section.copies.map(copy => <div key={copy.section_id}>
                 <p><strong>{copy.own_route ? 'Own-route PDF' : 'Mixed PDF'}</strong> · {STATUS_LABELS[copy.status]}
                   {copy.published ? ' · Published service available' : ''}</p>
+                <p>Timetable effective date: {copy.effective_date ? formatDate(copy.effective_date) : 'Unknown'}
+                  {copy.approval_method === 'automatic' ? ' · Automatically approved' : ''}</p>
                 {copy.official_source_url && <p><a href={copy.official_source_url}>Operator PDF</a> · Timetable {section.timetable_number}
                   {copy.source_pages?.length ? ` · PDF pages ${copy.source_pages.join(', ')}` : ''}</p>}
                 {copy.parse_error && <p>Latest section could not be verified.</p>}

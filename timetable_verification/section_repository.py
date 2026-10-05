@@ -20,6 +20,9 @@ def stage_sections(cursor, source_id, document_id, document):
             SET updated_at=now() RETURNING *''', (source_id, number))
         row = cursor.fetchone()
         section_id = row['id']
+        cursor.execute('SELECT withdrawn FROM timetable_review_controls WHERE timetable_number=%s', (number,))
+        control = cursor.fetchone()
+        held = bool(control and control['withdrawn'])
         cursor.execute('SELECT * FROM timetable_section_versions WHERE id = ANY(%s::bigint[])',
                        ([v for v in [row['approved_version_id'], row['pending_version_id']] if v],))
         versions = {v['id']: v for v in cursor.fetchall()}
@@ -29,7 +32,7 @@ def stage_sections(cursor, source_id, document_id, document):
         digest = content_sha256(extraction) if extraction else sha256_bytes(error.encode())
         equivalent = next((v for v in [pending, baseline] if v and v['content_sha256'] == digest), None)
         # Reappearance after an explicit withdrawal requires a fresh review.
-        if row['status'] == 'withdrawn' or (row['audit_review_required'] and not pending):
+        if (row['status'] == 'withdrawn' and not pending) or (row['audit_review_required'] and not pending):
             equivalent = None
         if equivalent:
             version_id = equivalent['id']
@@ -57,6 +60,10 @@ def stage_sections(cursor, source_id, document_id, document):
             VALUES (%s,%s,%s) ON CONFLICT DO NOTHING''', (version_id, document_id, section['pages']))
         cursor.execute('''UPDATE timetable_sections SET last_seen_document_version_id=%s,
             missing_from_document=false,updated_at=now() WHERE id=%s''', (document_id, section_id))
+        if row['status'] == 'withdrawn':
+            cursor.execute('UPDATE timetable_sections SET withdrawal_review_required=true WHERE id=%s', (section_id,))
+        if held:
+            cursor.execute("UPDATE timetable_sections SET status='withdrawn' WHERE id=%s", (section_id,))
         outcomes[outcome] += 1
         if error:
             outcomes['failed'] += 1
@@ -83,7 +90,7 @@ def stage_document(repository, *, run_id, source, source_id, pdf_bytes, pdf_sha2
             route_name = parent['route_name'] or next(iter(names), source.route_name_hint)
             directions = [d['name'] for e in valid for r in e['routes'] for d in r['directions']] or parent['direction_names']
             coverage = sorted({day for e in valid for r in e['routes'] for d in r['directions'] for s in d['services'] for day in s['service_days']}) or parent['service_day_coverage']
-            effective_date = max((e['effective_date'] for e in valid if e['effective_date']), default=parent['source_effective_date'])
+            effective_date = next((e['effective_date'] for e in valid if e['source_key'] == source.source_key), None)
             cursor.execute('''INSERT INTO timetable_source_versions(source_id,previous_version_id,
                 pdf_sha256,content_sha256,source_url,parser_version,import_version,extraction,
                 pdf_bytes,pdf_size_bytes,http_etag,http_last_modified,document_issues,

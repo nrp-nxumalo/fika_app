@@ -46,13 +46,13 @@ Offline access requires at least one successful online visit on the browser. Rem
 
 The maintained verification implementation lives in `timetable_verification/`. It keeps the operator-specific PDF layouts behind `MyCitiAdapter` and `GabsAdapter`, while sharing HTTP pacing, SHA-256 fingerprinting, canonical data, comparisons, PostgreSQL persistence, and audit planning. This keeps Python - the language already used by the original scrapers and extractors - without turning the two very different PDF formats into one large parser class.
 
-The daily workflow is deliberately review-gated:
+The daily workflow stages evidence first and applies the Golden Arrow safe-update policy before building the audit queue:
 
 1. Crawl each official catalogue once, sequentially, with an identifying user agent, at least 1.5 seconds plus jitter between requests to the same host, bounded retries, and `Retry-After` support.
 2. Download every PDF even when its filename is unchanged and calculate SHA-256 over the actual bytes.
 3. Parse to deterministic canonical JSON and calculate a second content hash. Parser failures and zero-timetable PDFs are quarantined with the captured PDF; they cannot be published.
-4. Store the registry, immutable PDF evidence, extraction, departure-count/time diff, check result, and dated event in PostgreSQL. A changed version becomes `changed_review_required`; the job never writes passenger-facing timetable rows.
-5. Review the exact captured PDF and comparison at `/admin/timetable-reliability`. `Approve and publish` applies the candidate in one transaction and clears the affected API cache. Withdrawal is also explicit and attributable.
+4. Store the registry, immutable PDF evidence, extraction, departure-count/time diff, check result, and dated event in PostgreSQL. A changed version becomes `changed_review_required`. Python staging never writes passenger-facing timetable rows; the shared Node policy can publish eligible GABS changes after the catalogue has been checked.
+5. Review the exact captured PDF and comparison at `/admin/timetable-reliability`. GABS review is grouped by route and timetable direction; identical PDF copies share one decision. Manual and automatic publication use the same transaction lock and clear affected caches. Withdrawal is explicit and attributable.
 6. Build one stratified human audit queue per week, targeting 200 departure cells and enforcing at least 100. The queue covers both operators, direction ordinals, service days, first and last departures, and footnoted trips when those categories are available.
 
 Golden Arrow regular and public-holiday PDFs can describe the same directions. Publication therefore composes independent `weekday`, `saturday`, `sunday`, and `public_holiday` families with trip-level source/version provenance; approving a holiday PDF cannot erase regular service. A later withdrawal restores the next-newest approved contribution for that family.
@@ -180,9 +180,9 @@ GABS PDFs are document evidence, not publication units. `GabsAdapter.parse_docum
 
 `fika-gabs-parser/2.0.0` and `fika-gabs-sections/2.0.0` introduce section staging. `timetable_sections` stores per-document section state, `timetable_section_versions` stores immutable content and review history, and `timetable_section_observations` links unchanged content to every captured PDF. An unchanged section in a regenerated PDF supplies additional evidence without publication or another content review. Identical copies in separate catalogue documents share one logical change alert; selecting a different publishing source remains explicit. Explicit withdrawal still requires fresh review on reappearance. An audit mismatch also requires fresh review even if the PDF is unchanged.
 
-The admin page groups copies by timetable number and canonical content, with direct comparisons against the preferred copy. It prefers an own-route PDF, then the newest effective date. Equal-priority differences require an explicit revision choice. Source overrides apply only to that exact revision; replacement revisions require review. Small stored family fingerprints keep reliability lists from loading every stop-time extraction. Publication continues to compose weekday, Saturday, Sunday and public-holiday families independently. Source, document-version and section-version provenance are retained on trips and audit samples. Existing route names and URLs are preserved when a section is published.
+The admin page groups timetable directions under one route, with PDF copies and direct comparisons under expandable evidence. It prefers an own-route PDF, then the newest effective date. Equal-priority differences require an explicit revision choice. Source overrides apply only to that exact revision; replacement revisions require explicit manual selection. Small stored family fingerprints keep reliability lists from loading every stop-time extraction. Publication continues to compose weekday, Saturday, Sunday and public-holiday families independently. Source, document-version and section-version provenance are retained on trips and audit samples. Existing route names and URLs are preserved when a section is published.
 
-The review page shows 10 sources and 10 timetable groups per page, with 25 and 50 available. Search, operator, status and review-queue filters apply to both lists, and candidates ready for approval appear first by default. Each timetable group keeps its copies together for comparison. Pagination and review actions preserve the filters; bulk unchanged approval applies only to eligible sources on the visible page.
+The review page defaults to Needs review and shows 10 routes per page, with 25 and 50 available. Route rows retain sibling directions when search or filters match one direction. Automatically updated, Scheduled, Current and Withdrawn filters show other dispositions. Document failures appear separately; the source registry and existing MyCiTi actions remain available. Pagination and review actions preserve filters.
 
 Rollout:
 
@@ -197,8 +197,37 @@ Recovery and rollback:
 - Failed downloads or incomplete parsing do not imply section withdrawal. Absence from a completely parsed PDF flags review and retains published service. Reparse captured evidence after fixing the parser; never manually edit an approved extraction.
 - To reverse a content choice, approve the reviewed replacement copy or withdraw that section copy; eligible approved contributions are restored. Conflicting fallback copies require explicit reviewer selection.
 - For a code rollback, pause the checker and section approval actions and keep the additive tables/provenance intact. Passenger timetable payloads and saved copies remain compatible with the older UI. Do not re-enable whole-document GABS publishing after section approvals: its approved bundle no longer represents all published section revisions. Restore a coordinated database backup before reverting that publication workflow.
-- Review events distinguish document checks, section approval/withdrawal and migration; no external alerts or automatic passenger-data publication are introduced.
+- Review events distinguish document checks, manual approval, automatic approval, timetable withdrawal/restoration and migration. Automatic publishing is disabled by default; no external alerts are sent.
 
 Run regression tests with the pinned Python dependencies, `npm test`, and `CI=true npm test --prefix client -- --watchAll=false --runInBand`. For actual PostgreSQL/Node transaction coverage, set `FIKA_SECTION_TEST_DSN` to an isolated test database and run `python -m unittest tests_python.test_sections_integration -v`; tests create and remove unique schemas. The supplied PDFs are stored as base64 fixtures. The integration tests cover independent approval, conflicting sources, withdrawal fallback, stale revisions, unchanged PDF evidence, audit provenance and migration idempotence.
 
 Reparse the latest captured PDFs without network access using `python -m timetable_verification.reparse_sections --source-key 004901` (omit the key for all captured GABS documents). This preserves the actual download timestamps and does not record a fresh catalogue check or publish any trips. It is useful when an official URL returns 404 after the evidence was captured.
+
+
+### Golden Arrow safe updates and rollout
+
+`lib/gabsTimetablePolicy.js` is the shared authority for review classifications. It compares the selected revisions with approved service-family winners, preserving trip counts, every ordered stop vector, operating days, scheduled/via/not-served patterns and annotations. Clock values and effective dates may change; time-driven column reordering is allowed. New timetables, added/removed trips, structural changes, missing/regressing dates, audit mismatches, uncertain evidence and equal-priority source conflicts require manual review. The existing own-route/newest-date priority applies; automation cannot replace a reviewer-selected exact revision.
+
+The checker invokes `scripts/review-gabs-timetables.js` after all source staging and before weekly audit planning. Every relevant copy must have been observed successfully in that same recent check. Failed competing downloads block that timetable; failures in unrelated documents do not block eligible routes. A partial PDF with an identified valid section can still supply evidence when only a sibling section failed. Future updates remain pending and are re-evaluated on each check; current service stays live until the first eligible check on or after the section's effective date in Africa/Johannesburg.
+
+`GABS_AUTO_APPROVE=0` (default) records classifications without publishing. `GABS_AUTO_APPROVE=1` enables eligible publication. Set it back to `0` to stop automation while retaining staging, classifications and manual review. Check-run summaries record safe updates, unchanged timetables, scheduled updates, manual reviews and failures. Automatically approved revisions record `approval_method`, actor, baseline, chosen revision IDs and policy version without advancing `last_manually_verified_on`. Identical evidence avoids rewriting trips or invalidating audits.
+
+The new authenticated actions are `POST /admin/timetable-reliability/timetables/:number/approve` and `/withdraw`. Forms contain a signed snapshot covering all current copies, baselines and holds, and stale decisions fail without publication. Approval applies the chosen revision and all identical pending copies in one transaction. Explicit source selection replaces the earlier exact-revision override. **Withdraw timetable across all PDFs** removes that direction's service and creates a persistent hold covering future copies; sibling directions remain live. After a fresh capture, use **Restore timetable and publish** to lift the hold manually. Legacy per-copy endpoints cannot bypass a timetable hold.
+
+Dates are section-specific. A catalogue entry's date is taken only from the section with that catalogue's timetable number. An absent or undated section has an unknown date; another direction's newer date is never substituted.
+
+Deploy the additive schema, web code and cron build together with `GABS_AUTO_APPROVE=0`. The cron build now installs both pinned Python dependencies and backend npm dependencies. Rebuild compact fingerprints and catalogue-date summaries from stored evidence:
+
+```bash
+node scripts/review-gabs-timetables.js --rebuild
+```
+
+Run the daily source checker, then preview the latest check's decisions using its reported run ID (the check must be less than 36 hours old and have complete GABS catalogue discovery):
+
+```bash
+node scripts/review-gabs-timetables.js --run-id=123 --dry-run
+```
+
+This preview does not publish or write classifications. The disabled daily job uses `--record-only` to persist classifications and rebuild summaries. After checking the results, enable `GABS_AUTO_APPROVE=1` in the cron environment; its next successful check also evaluates the existing backlog. Initial timetables still require an approved baseline. Reparse-only tools remain staging-only. Passenger APIs are unchanged; `/api/reliability` adds review disposition, reasons, approval method and automatic-review counts.
+
+Validate with `npm test`, `CI=true npm test --prefix client -- --watchAll=false --runInBand`, and `python -m unittest discover -s tests_python -v`. Set `FIKA_SECTION_TEST_DSN` to an **isolated test database** to include PostgreSQL transaction, duplicate-copy, date, hold, retry, rollback, cache and audit-provenance coverage. The tests create and remove unique schemas.

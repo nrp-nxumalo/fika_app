@@ -33,13 +33,13 @@ test('review defaults to ten rows with publishable sources before blocked and fu
     ...Array.from({ length: 11 }, (_, i) => reviewSource(i + 4)),
   ];
   const html = reviewPage(sources);
-  assert.match(html, /1–10 of 14 sources/);
+  assert.match(html, /1–10 of 12 sources/);
   assert.match(html, /sources\/4\/approve/);
   assert.match(html, /sources\/13\/approve/);
   assert.doesNotMatch(html, /sources\/(1|2|3|14)\/(approve|withdraw)/);
   assert.match(html, /source_page=2/);
   const next = reviewPage(sources, { source_page: '2' });
-  assert.match(next, /11–14 of 14 sources/);
+  assert.match(next, /11–12 of 12 sources/);
   assert.ok(next.indexOf('sources/14/approve') < next.indexOf('sources/1/withdraw'));
 });
 
@@ -63,7 +63,7 @@ test('pagination preserves filters, supports page sizes and deterministic source
   const html = reviewPage(sources, { q: 'route', operator: 'MyCiti', per_page: '25', sort: 'source' });
   assert.match(html, /1–25 of 31 sources/);
   assert.ok(html.indexOf('sources/2/approve') < html.indexOf('sources/10/approve'));
-  assert.match(html, /q=route&amp;operator=MyCiti&amp;status=&amp;review=&amp;sort=source&amp;per_page=25&amp;source_page=2/);
+  assert.match(html, /q=route&amp;operator=MyCiti&amp;status=&amp;review=needs_review&amp;sort=source&amp;per_page=25&amp;source_page=2/);
   assert.doesNotMatch(html, /sources\/26\/approve/);
 });
 
@@ -76,21 +76,24 @@ test('bulk approval is signed for only the visible eligible source revisions', (
     bulkApprovalIdentifier(getBulkUnchangedCandidates(sources.slice(10))))));
 });
 
-test('section pagination keeps all copies together and prioritizes ready groups', () => {
-  const groups = Array.from({ length: 12 }, (_, i) => ({ timetable_number: String(i + 1).padStart(6, '0'),
+test('route pagination keeps directions and duplicate evidence together', () => {
+  const groups = Array.from({ length: 12 }, (_, i) => ({ timetable_number: String(i + 1).padStart(4, '0') + '01',
     conflicting_copies: i === 0, variants: [{ copies: [{ id: i + 1, version_id: i + 101,
       pending_version_id: i + 101, catalogue_key: '001001', direction_name: 'Cape Town',
       status: 'changed_review_required', effective_date: '2026-01-01' }] }] }));
   groups[1].variants[0].copies.push({ ...groups[1].variants[0].copies[0], id: 99, catalogue_key: '009901' });
+  groups.push({ ...groups[1], timetable_number: '000202' });
   const html = reviewPage([], {}, groups);
-  assert.match(html, /1–10 of 12 timetable sections/);
-  assert.match(html, /sections\/2\/approve/);
-  assert.match(html, /sections\/99\/approve/);
-  assert.doesNotMatch(html, /sections\/(1|12)\/approve/);
-  assert.match(reviewPage([], { q: '009901' }, groups), /sections\/2\/approve/);
-  assert.match(reviewPage([], { review: 'conflict' }, groups), /1–1 of 1 timetable sections/);
-  assert.match(reviewPage([], { operator: 'MyCiti' }, groups), /0–0 of 0 timetable sections/);
-  assert.match(reviewPage([], { section_page: '2' }, groups), /11–12 of 12 timetable sections/);
+  assert.match(html, /1–10 of 12 routes/);
+  assert.equal((html.match(/<h3>Route 0002/g) || []).length, 1);
+  assert.match(html, /timetables\/000201\/approve/);
+  assert.match(html, /timetables\/000202\/approve/);
+  assert.equal((html.match(/action="[^"]*timetables\/000201\/approve"/g) || []).length, 1);
+  assert.doesNotMatch(html, /sections\/(2|99)\/approve/);
+  assert.match(reviewPage([], { q: '009901' }, groups), /timetables\/000202\/approve/);
+  assert.match(reviewPage([], { review: 'conflict' }, groups), /1–1 of 1 routes/);
+  assert.match(reviewPage([], { operator: 'MyCiti' }, groups), /0–0 of 0 routes/);
+  assert.match(reviewPage([], { section_page: '2' }, groups), /11–12 of 12 routes/);
 });
 
 test('untrusted query parameters are bounded, escaped and cannot redirect away from review', () => {
@@ -104,12 +107,13 @@ test('untrusted query parameters are bounded, escaped and cannot redirect away f
   assert.match(reviewReturnUrl('section_page=2', 'sections'), /section_page=2#sections$/);
 });
 
-test('future-effective sections are excluded from ready reviews and cannot be published from the page', () => {
-  const groups = [{ timetable_number: '001001', variants: [{ copies: [{ id: 1, version_id: 2,
-    pending_version_id: 2, effective_date: '2099-01-01', catalogue_key: '001001' }] }] }];
-  assert.match(reviewPage([], {}, groups), /disabled>Approve copy and publish/);
-  assert.match(reviewPage([], { review: 'ready' }, groups), /0–0 of 0 timetable sections/);
-  assert.match(reviewPage([], { review: 'future' }, groups), /1–1 of 1 timetable sections/);
+test('scheduled routes retain their own date and cannot publish early', () => {
+  const groups = [{ timetable_number: '001001', decision: { state: 'scheduled', reasons: [], snapshot: 'a'.repeat(64),
+    current_dates: ['2026-09-01'], proposed_dates: ['2099-01-01'], selected_version_ids: ['2'], families: ['weekday'] },
+    variants: [{ copies: [{ id: 1, version_id: 2, pending_version_id: 2, effective_date: '2099-01-01', catalogue_key: '001001' }] }] }];
+  assert.match(reviewPage([], { review: 'scheduled' }, groups), /disabled>Approve timetable and publish/);
+  assert.match(reviewPage([], {}, groups), /0–0 of 0 routes/);
+  assert.match(reviewPage([], { review: 'scheduled' }, groups), /1–1 of 1 routes/);
 });
 
 test('bulk selection rejects tampered, duplicate and stale visible candidates before publication', async () => {
@@ -303,6 +307,7 @@ test('admin page disables publication and excludes a future-effective route from
         removed_time_count: 0,
       },
     }],
+    query: { review: 'future' },
     checkRuns: [],
     audit: null,
     samples: [],
@@ -376,15 +381,16 @@ test('admin page quarantines parser failures without offering publication', () =
   assert.match(html, /captured PDF/);
 });
 
-test('section review signs independent actions and links physical page evidence and copy differences', () => {
+test('timetable review signs shared actions and links physical page evidence and copy differences', () => {
   const html = renderAdminPage({sources:[],checkRuns:[],audit:null,samples:[],sectionGroups:[{
     timetable_number:'004901',preferred_section_id:1,preferred_version_id:10,conflicting_copies:true,
+    decision:{state:'needs_review',snapshot:'b'.repeat(64),reasons:[],current_dates:['2026-08-01'],proposed_dates:['2026-09-01'],families:['weekday'],selected_version_ids:['20']},
     variants:[{copies:[{id:2,version_id:20,pending_version_id:20,content_sha256:'a'.repeat(64),
       catalogue_key:'005001',status:'changed_review_required',direction_name:'<Tafelsig>',
       effective_date:'2026-09-01',evidence:[{document_version_id:5,pages:[1,2]}]}]}],
   }]}, 'secret');
-  assert.match(html, /sections\/2\/approve/);
-  assert.match(html, new RegExp(actionToken('secret','section-approve',`2:20:${'a'.repeat(64)}`)));
+  assert.match(html, /timetables\/004901\/approve/);
+  assert.match(html, new RegExp(actionToken('secret','timetable-approve',`004901:${'b'.repeat(64)}`)));
   assert.match(html, /versions\/5\/pdf#page=1/);
   assert.match(html, /pages 1, 2/);
   assert.match(html, /comparison\?against=10/);
@@ -395,11 +401,42 @@ test('section review signs independent actions and links physical page evidence 
 test('section evidence and mutations require authentication before database access', async () => {
   const handlers = createTimetableReliabilityHandlers({database:{query(){throw Error('unexpected database access');}},
     username:'reviewer',password:'secret'});
-  for (const name of ['sectionComparison','approveSection','withdrawSection']) {
+  for (const name of ['sectionComparison','approveSection','withdrawSection','approveTimetable','withdrawTimetable']) {
     const response = {headers:{},set(k,v){this.headers[k]=v;return this;},status(v){this.statusCode=v;return this;},
       type(){return this;},send(){return this;}};
     await handlers[name]({get:()=>'',params:{id:'1'},body:{}},response);
     assert.equal(response.statusCode,401);
     assert.equal(response.headers['Cache-Control'],'no-store');
   }
+});
+
+test('timetable actions reject altered snapshots and invalid selections before database access', async () => {
+  const handlers = createTimetableReliabilityHandlers({ database: { query() { throw Error('unexpected database access'); } },
+    username: 'reviewer', password: 'secret' });
+  const auth = `Basic ${Buffer.from('reviewer:secret').toString('base64')}`;
+  for (const body of [
+    { snapshot: 'a'.repeat(64), token: 'bad-token' },
+    { snapshot: 'a'.repeat(64), selected_version_id: '-1' },
+    { snapshot: 'not-a-snapshot' },
+  ]) {
+    const response = { set() { return this; }, status(value) { this.statusCode = value; return this; },
+      type() { return this; }, send() { return this; } };
+    await handlers.approveTimetable({ get: () => auth, params: { number: '004901' }, body }, response);
+    assert.ok([400, 409].includes(response.statusCode));
+  }
+});
+
+test('route decisions show distinct timetable and catalogue dates without duplicate actions', () => {
+  const decision = { state: 'eligible', category: 'times_or_dates', snapshot: 'c'.repeat(64), reasons: [],
+    current_dates: ['2026-09-01'], proposed_dates: ['2026-09-14'], families: ['weekday'], selected_version_ids: ['2'] };
+  const copy = { id: 1, version_id: 2, pending_version_id: 2, content_sha256: 'h', catalogue_key: '004901',
+    effective_date: '2026-09-14', catalogue_effective_date: '2026-09-14' };
+  const groups = [{ timetable_number: '004901', decision, copies: [copy, { ...copy, id: 2, version_id: 3,
+    pending_version_id: 3, catalogue_key: '004902', catalogue_effective_date: '2026-08-20' }], variants: [] }];
+  const html = reviewPage([], {}, groups);
+  assert.match(html, /Current timetable effective date: 2026-09-01/);
+  assert.match(html, /Proposed timetable effective date: 2026-09-14/);
+  assert.match(html, /Catalogue entry effective date: 2026-08-20/);
+  assert.equal((html.match(/action="[^\"]*timetables\/004901\/approve"/g) || []).length, 1);
+  assert.doesNotMatch(html, /sections\/\d+\/approve/);
 });

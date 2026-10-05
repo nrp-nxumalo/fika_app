@@ -268,3 +268,18 @@ ALTER TABLE timetable_audit_samples ADD COLUMN IF NOT EXISTS section_version_id 
 ALTER TABLE timetable_sections ADD COLUMN IF NOT EXISTS audit_review_required boolean NOT NULL DEFAULT false;
 ALTER TABLE timetable_section_versions ADD COLUMN IF NOT EXISTS review_summary jsonb NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE timetable_section_versions DROP CONSTRAINT IF EXISTS timetable_section_versions_section_id_document_version_id_key;
+
+-- A hold belongs to the timetable, including copies discovered after withdrawal.
+CREATE TABLE IF NOT EXISTS timetable_review_controls (
+  timetable_number text PRIMARY KEY CHECK (timetable_number ~ '^[0-9]{6}$'),
+  withdrawn boolean NOT NULL DEFAULT false,
+  revision bigint NOT NULL DEFAULT 0,
+  changed_by text,
+  note text,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE timetable_sections ADD COLUMN IF NOT EXISTS withdrawal_review_required boolean NOT NULL DEFAULT false;
+ALTER TABLE timetable_section_versions ADD COLUMN IF NOT EXISTS policy_summary jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE timetable_section_versions ADD COLUMN IF NOT EXISTS review_decision jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE timetable_section_versions ADD COLUMN IF NOT EXISTS approval_method text CHECK (approval_method IN ('manual','automatic'));
+ALTER TABLE timetable_section_versions ADD COLUMN IF NOT EXISTS approval_policy_version text;

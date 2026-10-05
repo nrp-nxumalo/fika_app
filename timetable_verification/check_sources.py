@@ -67,6 +67,16 @@ class DailyChecker:
                 result = self._check_operator(adapter, run_id, counts)
                 operator_results[adapter.operator] = result
 
+            gabs_result = operator_results.get('GABS')
+            if gabs_result is not None and hasattr(self.repository, 'review_gabs_timetables'):
+                try:
+                    automation = self.repository.review_gabs_timetables(run_id, gabs_result)
+                    operator_results['gabs_automation'] = automation
+                    counts['failed'] += automation.get('failed', 0)
+                except Exception as exc:
+                    counts['failed'] += 1
+                    operator_results['gabs_automation'] = {'failed': 1, 'error': str(exc)}
+
             try:
                 audit_result = self.repository.ensure_weekly_audit_plan(
                     check_run_id=run_id,

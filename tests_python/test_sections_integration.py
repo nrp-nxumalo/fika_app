@@ -251,3 +251,204 @@ class SectionDatabaseTest(unittest.TestCase):
         self.assertEqual(result[0]['changed'],0)
         self.assertEqual(self.rows('SELECT last_downloaded_at FROM timetable_sources')[0],before)
         self.assertFalse(self.rows('SELECT * FROM trips'))
+
+    def check_evidence(self, source_id, key='004901', outcome='changed'):
+        self.repository.record_check_result(run_id=self.run_id, source_id=source_id,
+            source=DiscoveredSource('GABS', key, f'https://example.test/{key}.pdf'),
+            outcome=outcome, http_status=200 if outcome != 'failed' else 404)
+        self.rows("UPDATE timetable_source_check_runs SET operator_results=%s::jsonb WHERE id=%s",
+            (json.dumps({'GABS': {'discovered': 2}}), self.run_id))
+
+    def decide(self, number='004901', **options):
+        return self.node("""const {loadTimetableStates,changeTimetable}=require('./lib/gabsTimetableWorkflow');
+          const {reviewSnapshot}=require('./lib/gabsTimetablePolicy');
+          const [s]=await loadTimetableStates(db,{number:p.number});
+          const result=await changeTimetable(db,{reviewer:'integration',note:'Reviewed timetable',
+            snapshot:reviewSnapshot(s.rows,s.control),...p});console.log(JSON.stringify(result));""",
+          {'number': number, **options})
+
+    def automate(self, dry_run=False):
+        result = self.node("const {runAutomaticReviews}=require('./lib/gabsTimetableWorkflow');console.log(JSON.stringify(await runAutomaticReviews(db,p)));",
+            {'runId': self.run_id, 'dryRun': dry_run})
+        return json.loads(result.stdout)
+
+    def test_timetable_approval_groups_identical_copies_and_preserves_direction_dates(self):
+        first = page('004901').replace('2026/09/07', '2026/09/01')
+        second = page('004902', 'TOWN CENTRE - TAFELSIG').replace('2026/09/07', '2026/09/14')
+        a, _ = self.stage([first, second])
+        b, _ = self.stage([first, second], key='004902')
+        dates = self.rows('SELECT source_key,source_effective_date::text AS date FROM timetable_sources ORDER BY source_key')
+        self.assertEqual([r['date'] for r in dates], ['2026-09-01', '2026-09-14'])
+        self.decide()
+        states = self.rows("SELECT status,pending_version_id,approved_version_id FROM timetable_sections WHERE timetable_number='004901'")
+        self.assertTrue(all(r['status'] == 'verified' and r['approved_version_id'] and not r['pending_version_id'] for r in states))
+        self.assertEqual(len(self.rows('SELECT * FROM trips')), 1)
+        self.assertEqual(len(self.rows("SELECT * FROM timetable_sections WHERE timetable_number='004902' AND pending_version_id IS NOT NULL")), 2)
+        self.node("""const {readSectionReviews,groupRouteReviews}=require('./lib/timetableSectionReview');
+          const routes=groupRouteReviews(await readSectionReviews(db));
+          if(routes.length!==1||routes[0].timetables.length!==2)throw Error('duplicate routes');
+          const copies=routes[0].timetables[0].copies;
+          if(copies[0].effective_date!=='2026-09-01'||copies.find(c=>c.catalogue_key==='004902').catalogue_effective_date!=='2026-09-14')throw Error('date leakage');""")
+
+    def test_automatic_time_update_is_atomic_auditable_and_idempotent(self):
+        source, _ = self.stage([page('004901')]); self.decide()
+        verified = self.rows('SELECT last_manually_verified_on FROM timetable_sections')[0]
+        self.rows('CREATE TABLE api_response_cache(cache_key text PRIMARY KEY,route_id integer)')
+        self.rows("INSERT INTO api_response_cache SELECT code,id FROM routes")
+        self.rows("INSERT INTO api_response_cache VALUES ('schedules:v1',NULL)")
+        self.stage([page('004901', raw='06:05a')]); self.check_evidence(source)
+        before = self.rows('SELECT * FROM trips')
+        preview = self.automate(dry_run=True)
+        self.assertEqual(preview['automatic'], 1)
+        self.assertEqual(self.rows('SELECT * FROM trips'), before)
+        result = self.automate()
+        self.assertEqual(result['automatic'], 1)
+        self.assertEqual(result['failed'], 0)
+        self.assertEqual(str(self.rows('SELECT departure FROM stop_times ORDER BY sequence')[0]['departure']), '06:05:00')
+        self.assertEqual(self.rows('SELECT last_manually_verified_on FROM timetable_sections')[0], verified)
+        self.assertFalse(self.rows('SELECT * FROM api_response_cache'))
+        version = self.rows("SELECT * FROM timetable_section_versions WHERE review_status='approved'")[0]
+        self.assertEqual(version['approval_method'], 'automatic')
+        self.assertEqual(version['approved_by'], 'gabs-automation')
+        self.assertTrue(version['approval_policy_version'])
+        after = self.rows('SELECT * FROM trips')
+        self.automate()
+        self.assertEqual(self.rows('SELECT * FROM trips'), after)
+        self.assertEqual(len(self.rows("SELECT * FROM timetable_source_events WHERE event_type='timetable_auto_approved'")), 1)
+        candidates = build_extraction_candidates(self.repository.approved_versions())
+        reconciled, _ = reconcile_with_published(candidates, self.repository.published_departures([version['document_version_id']]))
+        self.assertEqual(len(reconciled), 2)
+
+    def test_identical_new_catalogue_evidence_keeps_live_trip_ids(self):
+        source, _ = self.stage([page('004901')]); self.decide()
+        before = self.rows('SELECT * FROM trips')
+        other, _ = self.stage([page('004901'),page('004902','TOWN CENTRE - TAFELSIG')], key='004902')
+        self.check_evidence(source); self.check_evidence(other, '004902')
+        result = self.automate()
+        self.assertEqual(result['failed'], 0)
+        self.assertEqual(self.rows('SELECT * FROM trips'), before)
+        self.assertTrue(self.rows("SELECT approved_version_id FROM timetable_sections WHERE source_id=%s AND timetable_number='004901'", (other,))[0]['approved_version_id'])
+        self.assertFalse(self.rows("SELECT published_at FROM timetable_section_versions WHERE approval_method='automatic'")[0]['published_at'])
+
+    def test_withdrawal_hold_covers_all_copies_and_newly_discovered_evidence(self):
+        first, _ = self.stage([page('004901'),page('004902','TOWN CENTRE - TAFELSIG')])
+        self.stage([page('004901')], key='004902')
+        self.decide(); self.decide('004902')
+        sibling = self.rows("SELECT t.* FROM trips t JOIN directions d ON d.id=t.direction_id WHERE d.code='02'")
+        self.decide(withdraw=True)
+        self.assertEqual(self.rows('SELECT * FROM trips'), sibling)
+        self.assertTrue(self.rows('SELECT withdrawn FROM timetable_review_controls WHERE timetable_number=%s', ('004901',))[0]['withdrawn'])
+        new, _ = self.stage([page('004901'),page('009901','C - D')], key='009901')
+        self.check_evidence(new, '009901')
+        self.stage([page('004901'),page('004902','TOWN CENTRE - TAFELSIG')]); self.check_evidence(first)
+        self.assertFalse(self.automate()['timetables'][0]['published'])
+        self.assertEqual(self.rows('SELECT * FROM trips'), sibling)
+        self.decide(restore=True)
+        self.assertEqual(len(self.rows('SELECT * FROM trips')), 2)
+        self.assertEqual(self.rows("SELECT t.* FROM trips t JOIN directions d ON d.id=t.direction_id WHERE d.code='02'"), sibling)
+        self.assertFalse(self.rows('SELECT withdrawn FROM timetable_review_controls WHERE timetable_number=%s', ('004901',))[0]['withdrawn'])
+
+    def test_stale_timetable_snapshot_rolls_back_entire_decision(self):
+        self.stage([page('004901')])
+        snapshot = self.node("const {loadTimetableStates}=require('./lib/gabsTimetableWorkflow');const {reviewSnapshot}=require('./lib/gabsTimetablePolicy');const [s]=await loadTimetableStates(db);console.log(reviewSnapshot(s.rows,s.control));").stdout.strip()
+        self.stage([page('004901', raw='06:10a')])
+        self.node("const {changeTimetable}=require('./lib/gabsTimetableWorkflow');await changeTimetable(db,{...p,number:'004901',reviewer:'reviewer',note:'stale'});",
+            {'snapshot': snapshot}, succeeds=False)
+        self.assertFalse(self.rows('SELECT * FROM trips'))
+        self.assertFalse(self.rows("SELECT * FROM timetable_section_versions WHERE review_status='approved'"))
+
+    def test_failed_competing_download_blocks_auto_but_unrelated_failure_does_not(self):
+        source, _ = self.stage([page('004901')]); self.decide()
+        other, _ = self.stage([page('004901'),page('009901','C - D')], key='009901')
+        self.stage([page('004901', raw='06:05a')]); self.check_evidence(source)
+        self.check_evidence(other, '009901', 'failed')
+        before = self.rows('SELECT * FROM trips')
+        self.assertEqual(self.automate()['automatic'], 0)
+        self.assertEqual(self.rows('SELECT * FROM trips'), before)
+        self.stage([page('004901'),page('009901','C - D')], key='009901'); self.check_evidence(other, '009901')
+        unrelated, _ = self.stage([page('008801','E - F')], key='008801')
+        self.check_evidence(unrelated, '008801', 'failed')
+        result = self.automate()
+        self.assertEqual(result['automatic'], 1)
+        self.assertEqual(result['failed'], 0)
+
+    def test_due_date_checks_do_not_publish_future_sections(self):
+        source, _ = self.stage([page('004901')]); self.decide()
+        future = page('004901', raw='06:05a').replace('2026/09/07','2099/01/01')
+        self.stage([future]); self.check_evidence(source)
+        before = self.rows('SELECT * FROM trips')
+        self.assertEqual(self.automate()['scheduled'], 1)
+        self.assertEqual(self.rows('SELECT * FROM trips'), before)
+        self.stage([page('004901', raw='06:05a')]); self.check_evidence(source)
+        self.assertEqual(self.automate()['automatic'], 1)
+
+    def test_explicit_source_selection_and_regular_holiday_families_coexist(self):
+        a, _ = self.stage([page('004901')]); self.decide()
+        holiday = page('004901', raw='08:00').replace('MONDAYS TO FRIDAYS', 'PUBLIC HOLIDAYS')
+        b, _ = self.stage([holiday, page('004902','TOWN CENTRE - TAFELSIG')], key='004902')
+        self.decide()
+        self.assertEqual(len(self.rows('SELECT * FROM trips')), 2)
+        self.stage([page('004901',raw='06:15a')]); self.check_evidence(a); self.check_evidence(b, '004902')
+        self.assertEqual(self.automate()['automatic'], 1)
+        self.assertEqual(len(self.rows('SELECT * FROM trips WHERE public_holiday')), 1)
+        self.stage([page('004901',raw='06:30a'),page('004902','TOWN CENTRE - TAFELSIG')], key='004902')
+        pending = self.rows("SELECT pending_version_id FROM timetable_sections WHERE source_id=%s AND timetable_number='004901'",(b,))[0]['pending_version_id']
+        self.decide(selectedVersionId=str(pending))
+        self.assertTrue(self.rows('SELECT source_override FROM timetable_section_versions WHERE id=%s',(pending,))[0]['source_override'])
+
+    def test_publication_error_rolls_back_all_identical_copies(self):
+        source, _ = self.stage([page('004901')]); self.decide()
+        self.stage([page('004901',raw='06:05a')]); self.check_evidence(source)
+        before = self.rows('SELECT * FROM trips')
+        self.rows("""CREATE FUNCTION fail_trip() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'simulated write failure'; END $$""")
+        self.rows('CREATE TRIGGER fail_trip BEFORE INSERT ON trips FOR EACH ROW EXECUTE FUNCTION fail_trip()')
+        result = self.automate()
+        self.assertEqual(result['failed'], 1)
+        self.assertEqual(self.rows('SELECT * FROM trips'), before)
+        self.assertTrue(self.rows('SELECT pending_version_id FROM timetable_sections')[0]['pending_version_id'])
+        self.assertFalse(self.rows("SELECT * FROM timetable_source_events WHERE event_type='timetable_auto_approved'"))
+
+    def test_daily_runner_records_decisions_while_disabled_then_publishes_when_enabled(self):
+        from unittest.mock import patch
+        source, _ = self.stage([page('004901')]); self.decide()
+        self.stage([page('004901', raw='06:05a')]); self.check_evidence(source)
+        before = self.rows('SELECT * FROM trips')
+        # The real cron gets its schema through the connection configuration.
+        connection = psycopg2.connect(os.environ['FIKA_SECTION_TEST_DSN'], options='-csearch_path=' + self.schema)
+        repository = TimetableRepository(connection)
+        try:
+            with patch.dict(os.environ, {'GABS_AUTO_APPROVE': '0'}):
+                result = repository.review_gabs_timetables(self.run_id, {'discovered': 1})
+            self.assertFalse(result['publishing_enabled'])
+            self.assertEqual(self.rows('SELECT * FROM trips'), before)
+            self.assertEqual(self.rows("SELECT review_decision FROM timetable_section_versions WHERE review_status='pending'")[0]['review_decision']['state'], 'eligible')
+            with patch.dict(os.environ, {'GABS_AUTO_APPROVE': '1'}):
+                result = repository.review_gabs_timetables(self.run_id, {'discovered': 1})
+            self.assertTrue(result['publishing_enabled'])
+            self.assertEqual(result['failed'], 0)
+            self.assertNotEqual(self.rows('SELECT * FROM trips'), before)
+        finally:
+            connection.close()
+
+    def test_auto_review_retains_audit_mismatch_and_structural_changes(self):
+        source, _ = self.stage([page('004901')]); self.decide()
+        before = self.rows('SELECT * FROM trips')
+        self.rows("UPDATE timetable_sections SET audit_review_required=true,status='changed_review_required'")
+        self.stage([page('004901')]); self.check_evidence(source)
+        self.assertEqual(self.automate()['manual_review'], 1)
+        self.assertEqual(self.rows('SELECT * FROM trips'), before)
+        self.assertTrue(self.rows('SELECT audit_review_required FROM timetable_sections')[0]['audit_review_required'])
+        self.decide()
+        self.stage([page('004901').replace('| TAFELSIG |','| ANOTHER STOP |')]); self.check_evidence(source)
+        self.assertEqual(self.automate()['manual_review'], 1)
+        self.assertEqual(self.rows('SELECT * FROM trips'), before)
+
+    def test_new_check_or_incomplete_catalogue_blocks_runner(self):
+        source, _ = self.stage([page('004901')]); self.decide()
+        self.stage([page('004901',raw='06:05a')]); self.check_evidence(source)
+        before = self.rows('SELECT * FROM trips')
+        self.rows("UPDATE timetable_source_check_runs SET operator_results=%s::jsonb WHERE id=%s",
+            (json.dumps({'GABS': {'discovered': 1, 'catalogue_coverage_error': 'incomplete'}}), self.run_id))
+        self.node("const {runAutomaticReviews}=require('./lib/gabsTimetableWorkflow');await runAutomaticReviews(db,p);",
+            {'runId': self.run_id, 'dryRun': False}, succeeds=False)
+        self.assertEqual(self.rows('SELECT * FROM trips'), before)
