@@ -274,6 +274,7 @@ const buildTimetablePayloadFromLegacyRows = (rows) => {
       return {
         id: directionRows[0]?.directions_id == null ? null : Number(directionRows[0].directions_id),
         name: directionName,
+        code: directionRows[0]?.direction_code,
         trips: [...tripById.values()].sort(compareTrips),
         rows: normalizedDirectionRows,
       };
@@ -802,10 +803,10 @@ function App() {
         let networkDataSource = 'network_v2';
 
         try {
-          data = await fetchApiJson(`/api/v2/schedule_times/${route.id}`, 'Unable to fetch timetable');
+          data = await fetchApiJson(`/api/v2/schedule_times/${route.id}?metadata=direction-codes`, 'Unable to fetch timetable');
         } catch (error) {
           networkDataSource = 'network_legacy';
-          data = await fetchApiJson(`/schedule_times/${route.id}`, 'Unable to fetch timetable');
+          data = await fetchApiJson(`/schedule_times/${route.id}?metadata=direction-codes`, 'Unable to fetch timetable');
         }
 
         const normalizedPayload = normalizeTimetablePayload(data);
@@ -1024,7 +1025,13 @@ function App() {
                       {directions.map((direction) => <button key={direction} type="button"
                         aria-pressed={selectedDirection === direction}
                         onClick={() => handleDirectionChange(direction)}>
-                        {getDirectionDestination(route, direction)}
+                        <span>{getDirectionDestination(route, direction)}</span>
+                        {route.agency === 'GABS' && /^\d{4}$/.test(route.code || '')
+                          && /^\d{2}$/.test(scheduleData?.[direction]?.code || '') && (
+                          <small className="route-direction-number">
+                            {route.code}{scheduleData[direction].code}
+                          </small>
+                        )}
                       </button>)}
                     </div>
                   </fieldset>

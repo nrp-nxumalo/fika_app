@@ -134,3 +134,33 @@ test('uses loaded direction names when they differ from the catalogue and expose
   expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('School Branch');
   expect(screen.getByRole('button', { name: /Show stops/ })).toBeInTheDocument();
 });
+
+test('distinguishes GABS directions with the same destination by their full timetable numbers', async () => {
+  const atlantisRoute = { ...route, id: 105, code: '0105', name: 'Atlantis - Bellville',
+    direction_1: 'Atlantis - Bellville', direction_2: 'Bellville - Atlantis' };
+  schedules = [atlantisRoute];
+  window.history.replaceState({}, '', getTimetablePath(atlantisRoute));
+  const freshPayload = payload(atlantisRoute);
+  freshPayload.directions = ['01', '02', '03', '04'].map((code, index) => ({
+    ...freshPayload.directions[index % 2], id: index + 1, code,
+    name: ['Atlantis - Bellville', 'Bellville - Atlantis',
+      'Atlantis - Table View - Bellville', 'Bellville - Table View - Atlantis'][index],
+  }));
+  freshPayload.directions[2].rows = freshPayload.directions[2].rows.map(row => ({
+    ...row, stop_times: row.stop_times.map(cell => ({ ...cell, arrival: '09:00:00' })),
+  }));
+  const originalFetch = global.fetch.getMockImplementation();
+  global.fetch.mockImplementation(async (url) => String(url).includes('schedule_times')
+    ? { ok: true, headers: { get: () => 'application/json' }, json: async () => freshPayload }
+    : originalFetch(url));
+  render(<App />);
+  const firstBellville = await screen.findByRole('button', { name: 'Bellville 010501' });
+  const secondBellville = screen.getByRole('button', { name: 'Bellville 010503' });
+  expect(firstBellville).toHaveAttribute('aria-pressed', 'true');
+  expect(screen.getByRole('button', { name: 'Atlantis 010502' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Atlantis 010504' })).toBeInTheDocument();
+  fireEvent.click(secondBellville);
+  expect(secondBellville).toHaveAttribute('aria-pressed', 'true');
+  expect(firstBellville).toHaveAttribute('aria-pressed', 'false');
+  expect(screen.getByRole('button', { name: /Show stops/ })).toHaveTextContent('09:00');
+});

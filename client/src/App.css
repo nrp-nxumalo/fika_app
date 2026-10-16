@@ -13,7 +13,7 @@
 }
 .route-toolbar .schedule-picker { width: 100%; display: grid; grid-template-columns: 180px minmax(0, 1fr); }
 .route-toolbar .dropdown, .route-toolbar .agency-select { width: 100%; min-width: 0; }
-.route-controls { display: flex; align-items: end; gap: 16px; margin-top: 10px; }
+.route-controls { display: flex; align-items: stretch; gap: 16px; margin-top: 10px; }
 .route-direction-control { flex: 1; min-width: 0; }
 .route-direction-control legend, .route-day-control {
   color: var(--color-muted); font-size: 12px; font-weight: 700;
@@ -29,11 +29,21 @@
 .route-direction-buttons button[aria-pressed="true"] {
   border-color: var(--color-brand); background: var(--color-brand); color: #fff;
 }
+.route-direction-number { display: block; margin-top: 3px; color: var(--color-muted); font-size: 11px; font-weight: 400; }
+.route-direction-buttons button[aria-pressed="true"] .route-direction-number { color: #e5e7eb; }
 .route-day-control { display: flex; flex-direction: column; gap: 6px; flex: 0 0 165px; }
 .route-day-control select {
-  width: 100%; min-height: 44px; border-radius: 7px; padding: 8px;
+  flex: 1; width: 100%; min-height: 44px; border-radius: 7px; padding: 8px;
   background: var(--color-surface); color: var(--color-heading-soft);
   border: 1px solid var(--color-border-strong); font-size: 14px;
+}
+.route-day-control select, .trip-boarding-filter select {
+  appearance: none;
+  background-image: var(--select-chevron);
+  background-position: right 12px center;
+  background-repeat: no-repeat;
+  background-size: 14px 14px;
+  padding-right: 38px;
 }
 .route-day-trigger { display: none; }
 .route-day-drawer {
