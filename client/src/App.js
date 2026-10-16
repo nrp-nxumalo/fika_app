@@ -1,12 +1,13 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import SchedulesDropdown from './SchedulesDropdown';
 import ScheduleTable from './ScheduleTable';
-import DirectionRadioButton from './DirectionRadioButton';
+import ServiceDayPicker from './ServiceDayPicker';
 import Navbar from './Navbar';
 import { AreaPage, AreasIndexPage } from './AreaPages';
 import InfoPage, { INFO_PAGES } from './InfoPage';
 import OperatorPage from './OperatorPage';
-import ReliabilityPage from './ReliabilityPage';
+import RouteLinkList from './RouteLinkList';
+import TimetableStatusNotice, { capeTownDay, getRouteStatus, useTimetableStatus } from './TimetableStatus';
 import SiteFooter from './SiteFooter';
 import SavedTimetablesPage from './SavedTimetablesPage';
 import {
@@ -16,6 +17,8 @@ import {
   trackTimetableView,
 } from './analytics';
 import {
+  filterRoutes,
+  getDirectionDestination,
   getAgencyDisplayName,
   getAvailableRouteCount,
   getAreaSlugFromPath,
@@ -35,12 +38,12 @@ import {
   getCachedSchedules,
   getCachedTimetable,
   findSavedTimetableByLocator,
-  isTimetableCacheCurrent,
   saveSchedulesToCache,
   saveTimetableToCache,
   setTimetableSaved,
   touchTimetable,
 } from './timetableCache';
+import './App.css';
 
 const SERVICE_DAYS = [
   { key: 'monday', label: 'Monday' },
@@ -86,6 +89,10 @@ const getCurrentPath = () => {
     return '/';
   }
 
+  if (window.location.pathname === '/data-reliability') {
+    window.history.replaceState({}, '', '/');
+    return '/';
+  }
   return window.location.pathname;
 };
 
@@ -369,20 +376,6 @@ const getFeaturedAreaLinks = (schedules) => {
     .slice(0, FEATURED_AREA_LIMIT);
 };
 
-const getAvailableServiceDays = (scheduleData, selectedDirection) => {
-  if (!scheduleData) {
-    return [];
-  }
-
-  const directionGroups = selectedDirection && scheduleData[selectedDirection]
-    ? [scheduleData[selectedDirection]]
-    : Object.values(scheduleData);
-
-  return SERVICE_DAYS.filter((day) =>
-    directionGroups.some((direction) => direction.trips?.some((trip) => trip[day.key]))
-  );
-};
-
 function TimetableStatePanel({ title, message, loading = false }) {
   return (
     <div className={`table-state-panel ${loading ? 'loading' : ''}`.trim()}>
@@ -418,6 +411,10 @@ function LandingPage({
   onAgencyChange,
   onRouteSelect,
 }) {
+  const [query, setQuery] = useState('');
+  const [visibleCount, setVisibleCount] = useState(24);
+  const matchingRoutes = filterRoutes(schedules, query, selectedAgency);
+  useEffect(() => { setVisibleCount(24); }, [query, selectedAgency]);
   const agencies = [...new Set(schedules.map((schedule) => schedule.agency))].filter(Boolean);
   const availableAgencies = agencies.map(getAgencyDisplayName).join(' and ');
   const featuredAreaLinks = getFeaturedAreaLinks(schedules);
@@ -431,7 +428,7 @@ function LandingPage({
           <p>
             Search Golden Arrow and MyCiTi route timetables in one place. Fika organizes route
             names, directions, stops, and service-day patterns into pages that are easier to scan
-            than static timetable PDFs.
+            than static timetable PDFs. {getRouteCountLabel(getAvailableRouteCount(schedules))} for Cape Town bus commuters.
           </p>
         </div>
 
@@ -449,6 +446,9 @@ function LandingPage({
               onAgencyChange={onAgencyChange}
               onRouteSelect={onRouteSelect}
               searchLocation="landing_search"
+              query={query}
+              onQueryChange={setQuery}
+              showResults={false}
             />
           )}
           <p id="landing-search-helper">
@@ -457,50 +457,29 @@ function LandingPage({
         </div>
       </section>
 
-      <section className="coverage-band" aria-label="Timetable coverage">
-        <div className="coverage-copy">
-          <h2>Available now</h2>
-          <p>{getRouteCountLabel(getAvailableRouteCount(schedules))} for Cape Town bus commuters.</p>
-        </div>
-        <div className="coverage-list">
-          <div className="coverage-item">
-            <a href="/operators/golden-arrow" className="coverage-link">
-              <img src="/agency-logos/gabs.png" alt="" />
-            </a>
-            <div>
-              <h3><a href="/operators/golden-arrow">Golden Arrow</a></h3>
-              <p>Cape Town route timetables</p>
-            </div>
-          </div>
-          <div className="coverage-item">
-            <a href="/operators/myciti" className="coverage-link">
-              <img src="/agency-logos/myciti.png" alt="" />
-            </a>
-            <div>
-              <h3><a href="/operators/myciti">MyCiTi</a></h3>
-              <p>Cape Town route timetables</p>
-            </div>
-          </div>
-        </div>
-        <div className="coverage-next">
-          <h2>Coming soon</h2>
-          <p>More operators, cities, and provinces as new timetable data is added.</p>
-        </div>
-      </section>
-
       {featuredAreaLinks.length > 0 && (
         <section className="area-link-band" aria-label="Popular Cape Town bus areas">
           {featuredAreaLinks.map(({ areaSlug, label, routeCount }) => (
-            <a
-              key={areaSlug}
-              href={`/areas/${areaSlug}`}
-              title={`${routeCount} routes serve ${label}`}
-            >
+            <a key={areaSlug} href={`/areas/${areaSlug}`} title={`${routeCount} routes serve ${label}`}>
               {label}
             </a>
           ))}
         </section>
       )}
+
+      <section className="home-routes" aria-labelledby="home-routes-title">
+        <div className="home-routes-heading">
+          <h2 id="home-routes-title">{query.trim() ? 'Matching routes' : 'Browse routes'}</h2>
+          <p role="status">{matchingRoutes.length} routes{selectedAgency ? ` · ${getAgencyDisplayName(selectedAgency)}` : ' · All operators'}</p>
+        </div>
+        {loadingSchedules ? <p>Loading routes...</p> : <>
+          <RouteLinkList routes={matchingRoutes.slice(0, visibleCount)}
+            emptyMessage="No routes match. Try another area, route number, or operator."
+            selectionSource="landing_routes" onRouteSelect={onRouteSelect} />
+          {visibleCount < matchingRoutes.length && <button className="show-more-routes" type="button"
+            onClick={() => setVisibleCount((count) => count + 24)}>Show more routes</button>}
+        </>}
+      </section>
 
       <section className="commuter-guide-band" aria-label="Cape Town timetable notes">
         <article>
@@ -540,8 +519,7 @@ function App() {
   const [loadingTimes, setLoadingTimes] = useState(false);
   const [selectedAgency, setSelectedAgency] = useState('');
   const [selectedDirection, setSelectedDirection] = useState('');
-  const [selectedServiceDay, setSelectedServiceDay] = useState('');
-  const [mobileFilterSheet, setMobileFilterSheet] = useState(null);
+  const [selectedServiceDay, setSelectedServiceDay] = useState(capeTownDay);
   const [hasOpenedTimetableView, setHasOpenedTimetableView] = useState(false);
   const [timetableMessage, setTimetableMessage] = useState('');
   const [offlineSaveMessage, setOfflineSaveMessage] = useState('');
@@ -558,8 +536,7 @@ function App() {
     setScheduleData(null);
     setTimetablePayload(null);
     setSelectedDirection('');
-    setSelectedServiceDay('');
-    setMobileFilterSheet(null);
+    setSelectedServiceDay(capeTownDay());
     setRouteSavedOffline(false);
     setTimetableDataSource('');
     setOfflineSaveMessage('');
@@ -583,8 +560,7 @@ function App() {
     setRoute(selectedRoute);
     setSelectedAgency(selectedRoute.agency);
     setSelectedDirection(getRouteDirections(selectedRoute)[0] || '');
-    setSelectedServiceDay('');
-    setMobileFilterSheet(null);
+    setSelectedServiceDay(capeTownDay());
     setTimetableMessage('');
     setOfflineSaveMessage('');
     setHasOpenedTimetableView(true);
@@ -603,6 +579,7 @@ function App() {
       const timetablePath = getTimetablePath(selectedRoute);
       updateBrowserPath(timetablePath, replaceUrl);
       setCurrentPath(timetablePath);
+      window.scrollTo({ top: 0 });
     }
   };
 
@@ -616,7 +593,6 @@ function App() {
         const cachedScheduleData = normalizeScheduleRoutes(cachedSchedules.data);
 
         setSchedules(cachedScheduleData);
-        setSelectedAgency((currentAgency) => currentAgency || cachedScheduleData[0]?.agency || '');
         setLoadingSchedules(false);
       }
 
@@ -628,7 +604,6 @@ function App() {
         }
 
         setSchedules(data);
-        setSelectedAgency((currentAgency) => currentAgency || data[0]?.agency || '');
         await saveSchedulesToCache(data);
       } catch (error) {
         console.error('Error fetching schedules:', error);
@@ -772,18 +747,7 @@ function App() {
     trackPageView({ path: currentPath, title: pageTitle });
   }, [currentPath, route]);
 
-  const handleAgencyChange = (agency) => {
-    const shouldStayInWorkspace = hasOpenedTimetableView || route;
-
-    setRequestedRouteLocator(null);
-    setSelectedAgency(agency);
-    clearTimetableSelection({
-      showWorkspace: shouldStayInWorkspace,
-      message: 'Select a route to view its timetable.',
-    });
-    updateBrowserPath('/');
-    setCurrentPath('/');
-  };
+  const handleAgencyChange = (agency) => { setSelectedAgency(agency); };
 
   const handleRouteSelect = (selectedRoute, { source } = {}) => {
     selectRoute(selectedRoute, { selectionSource: source });
@@ -791,12 +755,15 @@ function App() {
 
   useEffect(() => {
     let ignore = false;
+    let latestRequest = 0;
 
     const fetchScheduleTimes = async () => {
+      const request = ++latestRequest;
+      const isOutdated = () => ignore || request !== latestRequest;
       const cachedTimetable = await getCachedTimetable(route.id);
       let hasUsableCachedTimetable = false;
 
-      if (ignore) {
+      if (isOutdated()) {
         return;
       }
 
@@ -822,11 +789,7 @@ function App() {
         setScheduleData(null);
       }
 
-      if (
-        cachedTimetable?.data &&
-        hasTimetableDirections(cachedTimetable.data) &&
-        isTimetableCacheCurrent(cachedTimetable, route.effective_date)
-      ) {
+      if (navigator.onLine === false && hasUsableCachedTimetable) {
         return;
       }
 
@@ -847,7 +810,7 @@ function App() {
 
         const normalizedPayload = normalizeTimetablePayload(data);
 
-        if (ignore) {
+        if (isOutdated()) {
           return;
         }
 
@@ -876,11 +839,11 @@ function App() {
           cachedTimetable?.saved
         );
         const refreshedTimetable = await getCachedTimetable(route.id);
-        setRouteSavedOffline(Boolean(refreshedTimetable?.saved));
+        if (!isOutdated()) setRouteSavedOffline(Boolean(refreshedTimetable?.saved));
       } catch (error) {
         console.error('Error fetching timetable:', error);
 
-        if (!hasUsableCachedTimetable && !ignore) {
+        if (!hasUsableCachedTimetable && !isOutdated()) {
           setTimetableMessage('This timetable is not available offline yet. Connect to the internet and open it once to cache it.');
           trackEvent('timetable_load_failed', {
             agency: route.agency,
@@ -890,7 +853,7 @@ function App() {
           });
         }
       } finally {
-        if (!ignore) {
+        if (!isOutdated()) {
           setLoadingTimes(false);
         }
       }
@@ -905,8 +868,11 @@ function App() {
       fetchScheduleTimes();
     }
 
+    const reconnect = () => { if (route) fetchScheduleTimes(); };
+    window.addEventListener('online', reconnect);
     return () => {
       ignore = true;
+      window.removeEventListener('online', reconnect);
     };
   }, [route]);
 
@@ -924,31 +890,26 @@ function App() {
     });
   }, [route, routeSavedOffline, scheduleData, timetableDataSource, timetableViewKey]);
 
-  useEffect(() => {
-    const availableServiceDays = getAvailableServiceDays(scheduleData, selectedDirection);
-
-    if (!availableServiceDays.length) {
-      setSelectedServiceDay('');
-      return;
-    }
-
-    if (!availableServiceDays.some((day) => day.key === selectedServiceDay)) {
-      setSelectedServiceDay(availableServiceDays[0].key);
-    }
-  }, [scheduleData, selectedDirection, selectedServiceDay]);
-
   const loading = loadingTimes;
   const loadingInitialSchedules = loadingSchedules;
-  const availableServiceDays = getAvailableServiceDays(scheduleData, selectedDirection);
-  const directions = getRouteDirections(route);
-  const selectedServiceDayLabel = availableServiceDays.find((day) => day.key === selectedServiceDay)?.label;
-
-  const closeMobileFilterSheet = () => {
-    setMobileFilterSheet(null);
-  };
+  const loadedDirections = Object.keys(scheduleData || {});
+  const directions = loadedDirections.length ? loadedDirections : getRouteDirections(route);
+  useEffect(() => {
+    const names = Object.keys(scheduleData || {});
+    if (names.length) setSelectedDirection((current) => names.includes(current) ? current : names[0]);
+  }, [scheduleData]);
+  const statusState = useTimetableStatus(route ? `${route.agency}:${route.code}` : '', fetchApiJson);
+  const decoratedSchedules = useMemo(() => schedules.map((schedule) => ({
+    ...schedule,
+    timetableStatus: getRouteStatus(statusState.report, schedule, statusState),
+  })), [schedules, statusState]);
+  const routeStatus = getRouteStatus(statusState.report, route, {
+    ...statusState, direction: selectedDirection, serviceDay: selectedServiceDay,
+  });
 
   const handleDirectionChange = (direction) => {
     setSelectedDirection(direction);
+    window.scrollTo({ top: 0 });
     if (route) {
       trackEvent('direction_changed', {
         agency: route.agency,
@@ -960,6 +921,7 @@ function App() {
 
   const handleServiceDayChange = (serviceDay) => {
     setSelectedServiceDay(serviceDay);
+    window.scrollTo({ top: 0 });
     if (route) {
       trackEvent('service_day_changed', {
         agency: route.agency,
@@ -995,26 +957,19 @@ function App() {
     }
   };
 
-  const routeSearchPlaceholder = selectedAgency
-    ? `Search ${getAgencyDisplayName(selectedAgency)} routes...`
-    : 'Search route...';
-
   const showTimetableWorkspace = hasOpenedTimetableView || route;
   const infoPage = INFO_PAGES[currentPath];
   const operatorAgency = getOperatorAgencyFromPath(currentPath);
   const areaSlug = getAreaSlugFromPath(currentPath);
   const isAreasIndex = isAreasIndexPath(currentPath);
   const isSavedTimetablesPage = currentPath === '/saved-timetables';
-  const isReliabilityPage = currentPath === '/data-reliability';
 
   return (
     <div className="App">
       <Navbar />
-      {isReliabilityPage ? (
-        <ReliabilityPage />
-      ) : isSavedTimetablesPage ? (
+      {isSavedTimetablesPage ? (
         <SavedTimetablesPage
-          schedules={schedules}
+          schedules={decoratedSchedules}
           onViewRoute={(savedRoute) => selectRoute(savedRoute)}
         />
       ) : infoPage ? (
@@ -1022,25 +977,25 @@ function App() {
       ) : operatorAgency ? (
         <OperatorPage
           agency={operatorAgency}
-          schedules={schedules}
+          schedules={decoratedSchedules}
           loadingSchedules={loadingInitialSchedules}
         />
       ) : isAreasIndex ? (
         <AreasIndexPage
-          schedules={schedules}
+          schedules={decoratedSchedules}
           loadingSchedules={loadingInitialSchedules}
         />
       ) : areaSlug ? (
         <AreaPage
           areaSlug={areaSlug}
-          schedules={schedules}
+          schedules={decoratedSchedules}
           loadingSchedules={loadingInitialSchedules}
         />
       ) : !showTimetableWorkspace ? (
         <>
           <LandingPage
             route={route}
-            schedules={schedules}
+            schedules={decoratedSchedules}
             selectedAgency={selectedAgency}
             loadingSchedules={loadingInitialSchedules}
             onAgencyChange={handleAgencyChange}
@@ -1049,68 +1004,33 @@ function App() {
           <SiteFooter />
         </>
       ) : (
-        <div className='container'>
+        <main className='container'>
           <div className="timetable-layout">
             <div className="timetable-workspace">
-              <div className='side-bar'>
+              <div className="route-toolbar" aria-label="Find and filter timetables">
                 <SchedulesDropdown
-                  placeholder={routeSearchPlaceholder}
+                  placeholder="Search routes"
                   route={route}
-                  schedules={schedules}
+                  schedules={decoratedSchedules}
                   selectedAgency={selectedAgency}
                   onAgencyChange={handleAgencyChange}
                   onRouteSelect={handleRouteSelect}
                   searchLocation="timetable_search"
                 />
-                {directions.length > 0 && (
-                  <div className="mobile-filter-chips">
-                    {directions.length > 1 && (
-                      <button
-                        type="button"
-                        className="mobile-filter-chip"
-                        onClick={() => setMobileFilterSheet('direction')}
-                      >
-                        <span>Direction</span>
-                        <strong>{selectedDirection}</strong>
-                      </button>
-                    )}
-                    {availableServiceDays.length > 0 && (
-                      <button
-                        type="button"
-                        className="mobile-filter-chip"
-                        onClick={() => setMobileFilterSheet('serviceDay')}
-                      >
-                        <span>Day</span>
-                        <strong>{selectedServiceDayLabel}</strong>
-                      </button>
-                    )}
-                  </div>
-                )}
-                {route && (
-                  <DirectionRadioButton
-                    className="directions"
-                    route={route}
-                    setSelectedDirection={handleDirectionChange}
-                    selectedDirection={selectedDirection}
-                  />
-                )}
-                {availableServiceDays.length > 0 && (
-                  <div className="service-day-toggle-container">
-                    <label className="service-day-toggle-label">Service Day</label>
-                    <div className="service-day-toggle">
-                      {availableServiceDays.map((day) => (
-                        <button
-                          key={day.key}
-                          type="button"
-                          className={selectedServiceDay === day.key ? 'active' : ''}
-                          onClick={() => handleServiceDayChange(day.key)}
-                        >
-                          {day.label}
-                        </button>
-                      ))}
+                {route && <div className="route-controls">
+                  <fieldset className="route-direction-control">
+                    <legend>Direction</legend>
+                    <div className="route-direction-buttons">
+                      {directions.map((direction) => <button key={direction} type="button"
+                        aria-pressed={selectedDirection === direction}
+                        onClick={() => handleDirectionChange(direction)}>
+                        {getDirectionDestination(route, direction)}
+                      </button>)}
                     </div>
-                  </div>
-                )}
+                  </fieldset>
+                  <ServiceDayPicker key={`${route.id}|${selectedDirection}`} days={SERVICE_DAYS}
+                    value={selectedServiceDay} onChange={handleServiceDayChange} />
+                </div>}
               </div>
               <div className='table'>
                 {!route ? (
@@ -1138,60 +1058,16 @@ function App() {
                     savedOffline={routeSavedOffline}
                     onSaveOfflineChange={handleSaveOfflineChange}
                     offlineSaveMessage={offlineSaveMessage}
+                    statusNotice={<>
+                      {timetableDataSource === 'cache' && <p className="saved-times-notice" role="status">Showing saved timetable times. Updates appear when a connection is available.</p>}
+                      <TimetableStatusNotice status={routeStatus} />
+                    </>}
                   />
                 )}
               </div>
-              {mobileFilterSheet && (
-                <div className="mobile-sheet" role="dialog" aria-modal="true">
-                  <button
-                    type="button"
-                    className="mobile-sheet-backdrop"
-                    aria-label="Close filters"
-                    onClick={closeMobileFilterSheet}
-                  />
-                  <div className="mobile-sheet-panel">
-                    <div className="mobile-sheet-header">
-                      <h2>
-                        {mobileFilterSheet === 'direction' ? 'Select Direction' : 'Select Service Day'}
-                      </h2>
-                      <button type="button" onClick={closeMobileFilterSheet}>
-                        Close
-                      </button>
-                    </div>
-                    <div className="mobile-sheet-options">
-                      {mobileFilterSheet === 'direction' && directions.map((direction) => (
-                        <button
-                          key={direction}
-                          type="button"
-                          className={selectedDirection === direction ? 'active' : ''}
-                          onClick={() => {
-                            handleDirectionChange(direction);
-                            closeMobileFilterSheet();
-                          }}
-                        >
-                          {direction}
-                        </button>
-                      ))}
-                      {mobileFilterSheet === 'serviceDay' && availableServiceDays.map((day) => (
-                        <button
-                          key={day.key}
-                          type="button"
-                          className={selectedServiceDay === day.key ? 'active' : ''}
-                          onClick={() => {
-                            handleServiceDayChange(day.key);
-                            closeMobileFilterSheet();
-                          }}
-                        >
-                          {day.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
             </div>
           </div>
-        </div>
+        </main>
       )}
     </div>
   );

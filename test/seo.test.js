@@ -104,6 +104,19 @@ test('numeric timetable APIs remain registered for backward compatibility', () =
     .filter(Boolean);
   assert.ok(paths.includes('/schedule_times/:id'));
   assert.ok(paths.includes('/api/v2/schedule_times/:id'));
+  assert.ok(paths.includes('/api/timetable-status'));
+  assert.ok(paths.includes('/api/reliability'));
+});
+
+test('public reliability page redirects home and is absent from public navigation and sitemap', () => {
+  const layer = app._router.stack.find(item => item.route?.path === '/data-reliability');
+  const response = { redirect(code, location) { this.code = code; this.location = location; } };
+  layer.route.stack[0].handle({}, response);
+  assert.equal(response.code, 301);
+  assert.equal(response.location, '/');
+  assert.doesNotMatch(buildSitemapXml([route], []), /data-reliability/);
+  const about = app._router.stack.find(item => item.route?.path === '/about');
+  about.route.stack[0].handle({}, { send(html) { assert.doesNotMatch(html, /href="\/data-reliability"/); } });
 });
 
 test('GA4 measurement IDs are validated before runtime injection', () => {

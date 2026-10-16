@@ -5,6 +5,10 @@ import {
   getSavedTimetables,
   saveTimetableToCache,
   setTimetableSaved,
+  getCachedTimetableStatus,
+  saveTimetableStatusToCache,
+  getCachedSchedules,
+  saveSchedulesToCache,
 } from './timetableCache';
 
 const payload = {
@@ -47,4 +51,15 @@ test('lists only saved records, backfills legacy metadata, resolves locators, an
   expect(unpinned.data).toEqual(payload);
 
   now.mockRestore();
+});
+
+test('update notices are stored independently from schedules and saved timetable freshness', async () => {
+  await saveSchedulesToCache([route]);
+  await saveTimetableToCache(route, payload, true);
+  const before = await getCachedTimetable(route.id);
+  const status = { checked_at: '2026-10-14T03:00:00Z', routes: [{ agency: 'GABS', code: '0004', directions: [] }] };
+  await saveTimetableStatusToCache(status);
+  expect(await getCachedTimetableStatus()).toEqual(status);
+  expect((await getCachedSchedules()).data).toEqual([route]);
+  expect(await getCachedTimetable(route.id)).toEqual(before);
 });

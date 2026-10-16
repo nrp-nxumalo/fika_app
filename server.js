@@ -36,6 +36,7 @@ const {
 } = require('./lib/routeUrlAliases');
 const { createSearchPerformanceHandler } = require('./lib/adminSearchPerformance');
 const { getPublicReliabilityReport } = require('./lib/timetableReliabilityReport');
+const { createTimetableStatusHandler } = require('./lib/timetableStatus');
 const { createTimetableReliabilityHandlers } = require('./lib/timetableReliabilityAdmin');
 
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
@@ -313,7 +314,7 @@ const publicApiLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
-app.use(['/schedules', '/schedule_times', '/api/v2/schedule_times', '/api/reliability', '/sitemap.xml'], publicApiLimiter);
+app.use(['/schedules', '/schedule_times', '/api/v2/schedule_times', '/api/reliability', '/api/timetable-status', '/sitemap.xml'], publicApiLimiter);
 
 function handleQueryError(res, error) {
   console.error('Error executing query', error);
@@ -653,17 +654,6 @@ const INFO_PAGES = {
       'Timetable data can change, and Fika does not guarantee that every route, stop, or trip time is complete or current.',
       'Fika is independent from Golden Arrow, MyCiTi, and other transport operators unless a future page says otherwise. Operator names and logos are used only to identify the timetable source or service being viewed.',
       'You may use the site for personal timetable lookup. Automated scraping or abusive request patterns are not permitted.',
-    ],
-  },
-  '/data-reliability': {
-    title: 'Timetable Source Reliability | Fika Timetables',
-    heading: 'Timetable source reliability',
-    eyebrow: 'Evidence, not promises',
-    description: 'See Fika timetable source fingerprints, review status, official PDF links, daily checks, and weekly source-accuracy audit evidence.',
-    body: [
-      'Source accuracy means Fika correctly displays the timetable published in the cited operator PDF. Fika checks source fingerprints daily, holds changed extractions for human review, and records weekly sample audits.',
-      'Operational punctuality means a bus actually arrives at the published time. Fika does not currently measure live operations and cannot claim to prove punctuality.',
-      'The live source registry and latest recorded audit load on this page after the application starts.',
     ],
   },
 };
@@ -1456,7 +1446,6 @@ function renderSiteFooter() {
     { href: '/areas', label: 'Areas' },
     { href: '/saved-timetables', label: 'Saved' },
     { href: '/about', label: 'About' },
-    { href: '/data-reliability', label: 'Data reliability' },
     { href: '/contact', label: 'Contact' },
     { href: '/privacy-policy', label: 'Privacy Policy' },
     { href: '/terms', label: 'Terms' },
@@ -1786,6 +1775,8 @@ app.get('/api/v2/schedule_times/:id', async (req, res) => {
   }
 });
 
+app.get('/api/timetable-status', createTimetableStatusHandler(pool));
+
 app.get('/api/reliability', async (req, res) => {
   try {
     const report = await getPublicReliabilityReport(pool);
@@ -1887,6 +1878,8 @@ app.get('/saved-timetables', (req, res) => {
     description: 'Saved timetable details are stored in this browser and appear after the Fika app loads.',
   })));
 });
+
+app.get('/data-reliability', (_req, res) => res.redirect(301, '/'));
 
 Object.keys(INFO_PAGES).forEach((pagePath) => {
   app.get(pagePath, (req, res) => {

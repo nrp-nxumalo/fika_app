@@ -1,4 +1,4 @@
-const APP_SHELL_CACHE = 'fika-app-shell-v3';
+const APP_SHELL_CACHE = 'fika-app-shell-v4';
 const APP_SHELL_PREFIX = 'fika-app-shell-';
 const CORE_URLS = ['/', '/saved-timetables', '/asset-manifest.json', '/manifest.json'];
 

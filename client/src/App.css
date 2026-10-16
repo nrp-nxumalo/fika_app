@@ -1,0 +1,102 @@
+/* Route browsing uses the document scroll; controls stay within easy reach. */
+.App { height: auto; min-height: 100dvh; }
+.App .landing, .App .info-page, .App .saved-page { overflow: visible; }
+.App .container { display: block; overflow: visible; max-height: none; padding: 0 20px 32px; }
+.App .timetable-layout, .App .timetable-workspace, .App .table {
+  display: block; overflow: visible; height: auto; max-height: none; min-height: 0; min-width: 0;
+}
+.App .timetable-layout { max-width: 1080px; width: 100%; margin: 0 auto; }
+.route-toolbar {
+  position: sticky; top: 0; z-index: 60; padding: 12px 0;
+  background: var(--color-page); border-bottom: 1px solid var(--color-border);
+  margin-bottom: 18px;
+}
+.route-toolbar .schedule-picker { width: 100%; display: grid; grid-template-columns: 180px minmax(0, 1fr); }
+.route-toolbar .dropdown, .route-toolbar .agency-select { width: 100%; min-width: 0; }
+.route-controls { display: flex; align-items: end; gap: 16px; margin-top: 10px; }
+.route-direction-control { flex: 1; min-width: 0; }
+.route-direction-control legend, .route-day-control {
+  color: var(--color-muted); font-size: 12px; font-weight: 700;
+}
+.route-direction-control legend { margin-bottom: 6px; }
+.route-direction-buttons { display: flex; gap: 6px; }
+.route-direction-buttons button {
+  flex: 1; min-width: 0; min-height: 44px; padding: 8px 12px; border-radius: 7px;
+  background: var(--color-surface); color: var(--color-heading-soft);
+  border: 1px solid var(--color-border-strong); font-size: 14px; line-height: 1.35;
+  overflow-wrap: anywhere; cursor: pointer;
+}
+.route-direction-buttons button[aria-pressed="true"] {
+  border-color: var(--color-brand); background: var(--color-brand); color: #fff;
+}
+.route-day-control { display: flex; flex-direction: column; gap: 6px; flex: 0 0 165px; }
+.route-day-control select {
+  width: 100%; min-height: 44px; border-radius: 7px; padding: 8px;
+  background: var(--color-surface); color: var(--color-heading-soft);
+  border: 1px solid var(--color-border-strong); font-size: 14px;
+}
+.route-day-trigger { display: none; }
+.route-day-drawer {
+  background: var(--color-surface); border: 1px solid var(--color-border-strong);
+  border-radius: 16px 16px 0 0; bottom: 0; color: var(--color-text); left: 0;
+  margin: 0; max-height: 80dvh; max-width: none; overflow-y: auto; padding: 0;
+  position: fixed; right: 0; top: auto; width: 100%; box-sizing: border-box;
+}
+.route-day-drawer::backdrop { background: var(--color-overlay); }
+.route-day-drawer-content { padding: 18px 16px max(18px, env(safe-area-inset-bottom)); }
+.route-day-drawer-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.route-day-drawer-header h2 { font-size: 20px; margin: 0; }
+.route-day-drawer button { color: var(--color-heading-soft); background: var(--color-surface-soft); border: 1px solid var(--color-border-strong); border-radius: 8px; cursor: pointer; font: inherit; min-height: 44px; padding: 10px 14px; }
+.route-day-options { display: grid; gap: 8px; }
+.route-day-options button { min-height: 48px; text-align: left; }
+.route-day-options button[aria-pressed="true"] { background: var(--color-brand); border-color: var(--color-brand); color: #fff; }
+.route-day-drawer button:focus-visible { outline: 3px solid var(--color-brand); outline-offset: 2px; }
+body:has(.route-day-drawer[open]) { overflow: hidden; }
+.route-toolbar :focus-visible, .show-more-routes:focus-visible {
+  outline: 3px solid var(--color-brand); outline-offset: 3px;
+}
+.App .table-state-panel { min-height: 280px; }
+.home-routes { max-width: 1160px; margin: 0 auto 32px; }
+.App .area-link-band { margin: 0 auto 24px; }
+.home-routes-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.home-routes-heading h2 { color: var(--color-heading); margin: 0 0 14px; }
+.home-routes-heading p { color: var(--color-muted); font-size: 14px; }
+.show-more-routes {
+  display: block; margin: 20px auto 0; background: var(--color-surface);
+  color: var(--color-heading); border: 1px solid var(--color-border-strong);
+  padding: 12px 24px; min-height: 44px; border-radius: 8px; cursor: pointer;
+}
+.App .landing-hero { min-height: 0; padding: 12px 0 30px; }
+.App .landing-copy h1 { font-size: clamp(32px, 4vw, 48px); }
+.App .landing-copy p:not(.landing-eyebrow) { font-size: 16px; }
+.timetable-status-notice {
+  border: 1px solid var(--color-border-strong); border-left: 3px solid var(--color-brand);
+  background: var(--color-surface-soft); border-radius: 6px; padding: 12px 14px;
+  margin: 14px 0; font-size: 14px; line-height: 1.5;
+}
+.timetable-status-notice.status-expired { border-left-color: #c88c32; }
+.timetable-status-notice p { margin: 5px 0 0; }
+.status-last-known { color: var(--color-muted); font-size: 12px; }
+.saved-times-notice { color: var(--color-muted); font-size: 13px; line-height: 1.5; }
+.status-source-links { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 7px; }
+.status-source-links a { color: var(--color-brand); }
+@media (max-width: 680px) {
+  .App .container { padding: 0 10px 24px; }
+  .route-toolbar { padding: 8px 0; margin-bottom: 10px; }
+  .route-toolbar .schedule-picker { grid-template-columns: 145px minmax(0, 1fr); gap: 6px; }
+  .route-toolbar .agency-select, .route-toolbar .dropdown input { min-height: 44px; font-size: 16px; }
+  .route-controls { flex-direction: column; gap: 8px; align-items: stretch; margin-top: 8px; }
+  .route-direction-buttons button { font-size: 12px; padding: 7px 5px; height: 100%; }
+  .route-direction-buttons { height: auto; }
+  .route-day-control { display: none; }
+  .route-day-trigger {
+    display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 8px 12px;
+    border: 1px solid var(--color-border-strong); border-radius: 7px;
+    background: var(--color-surface); color: var(--color-heading-soft); cursor: pointer; text-align: left;
+  }
+  .route-day-trigger > span { color: var(--color-muted); font-size: 12px; font-weight: 700; }
+  .route-day-trigger strong { flex: 1; font-size: 16px; }
+  .route-day-trigger svg { fill: none; stroke: currentColor; stroke-width: 2; }
+  .home-routes-heading { display: block; }
+  .home-routes-heading p { margin: -5px 0 14px; }
+}

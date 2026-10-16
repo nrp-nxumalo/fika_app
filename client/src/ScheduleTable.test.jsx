@@ -1,177 +1,160 @@
 import React from 'react';
 import '@testing-library/jest-dom';
-import { fireEvent, render } from '@testing-library/react';
-import ScheduleTable, { getTripDetails, getVisibleRows, getVisibleTrips } from './ScheduleTable';
+import { fireEvent, render, screen, within } from '@testing-library/react';
+import ScheduleTable from './ScheduleTable';
+import { getTripDetails, getVisibleTrips, getServiceBadge, normalizeStopName } from './tripListUtils';
 
-const weekdayTrip = {
-  trip_id: 101,
-  monday: true,
-  service_pattern: '11111000',
-  first_arrival: '04:50:00',
-};
-
-const saturdayTrip = {
-  trip_id: 202,
-  saturday: true,
-  service_pattern: '00000100',
-  first_arrival: '06:00:00',
-};
-
+const route = { id: 98, agency: 'GABS', code: '0098', name: 'Bluedowns - Cape Town', direction_1: 'Bluedowns - Mowbray - Cape Town', direction_2: 'Cape Town - Mowbray - Bluedowns' };
+const trips = [
+  { trip_id: 2, monday: true, tuesday: true, wednesday: true, thursday: true, friday: true },
+  { trip_id: 1, monday: true, tuesday: true, wednesday: true, thursday: true },
+  { trip_id: 3, friday: true },
+  { trip_id: 4, saturday: true },
+  { trip_id: 5, public_holiday: true },
+];
+const cell = (trip_id, arrival, stop_time_type = 'scheduled') => ({ trip_id, arrival, stop_time_type });
 const rows = [
-  {
-    name: 'MAKHAZA',
-    sequence: 0,
-    stop_times: [
-      { trip_id: 101, stop_time_type: 'not_served' },
-      { trip_id: 202, arrival: '06:00:00', stop_time_type: 'scheduled' },
-    ],
-  },
-  {
-    name: 'MAKHAYA',
-    sequence: 1,
-    stop_times: [{ trip_id: 101, stop_time_type: 'not_served' }],
-  },
-  {
-    name: 'VILLAGE 3',
-    sequence: 1,
-    stop_times: [{ trip_id: 202, arrival: '06:20:00', stop_time_type: 'scheduled' }],
-  },
-  {
-    name: 'VILLAGE 3',
-    sequence: 2,
-    stop_times: [{ trip_id: 101, stop_time_type: 'not_served' }],
-  },
-  {
-    name: 'HARARE',
-    sequence: 2,
-    stop_times: [{ trip_id: 202, arrival: '06:30:00', stop_time_type: 'scheduled' }],
-  },
-  {
-    name: 'HARARE',
-    sequence: 3,
-    stop_times: [{ trip_id: 101, arrival: '04:50:00', stop_time_type: 'scheduled' }],
-  },
+  { name: 'Not served', sequence: 0, stop_times: trips.map(t => cell(t.trip_id, null, 'not_served')) },
+  { name: 'Electric City', sequence: 1, stop_times: [cell(1, '05:00:00'), cell(2, '05:00:00'), cell(3, '07:00:00'), cell(4, '06:00:00'), cell(5, '09:00:00')] },
+  { name: 'Mowbray', sequence: 2, stop_times: [cell(1, null, 'via'), cell(2, '05:30:00'), cell(3, '07:30:00')] },
+  { name: 'Waterfront', sequence: 3, stop_times: [cell(1, '06:15:00')] },
+  { name: 'Cape Town', sequence: 3, stop_times: [cell(2, '06:00:00'), cell(3, '08:00:00'), cell(4, '07:00:00'), cell(5, '10:00:00')] },
 ];
+const scheduleData = Object.fromEntries([route.direction_1, route.direction_2].map(name => [name, { name, trips, rows }]));
+const props = { route, scheduleData, selectedDirection: route.direction_1, selectedServiceDay: 'monday' };
+const tripButtons = () => screen.queryAllByRole('button', { name: /(?:Show|Hide) stops/ });
 
-test('visible rows include only rows used by the selected service-day trips', () => {
-  expect(getVisibleRows(rows, [weekdayTrip]).map((row) => row.name)).toEqual([
-    'MAKHAZA',
-    'MAKHAYA',
-    'VILLAGE 3',
-    'HARARE',
-  ]);
+test('shows compact chronological journeys, preserving simultaneous branches and selected direction', () => {
+  render(<ScheduleTable {...props} />);
+  expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('→ Cape Town');
+  expect(screen.getByText('via Mowbray')).toBeInTheDocument();
+  expect(screen.getByText('Golden Arrow · 0098 · Bluedowns–Cape Town')).toBeInTheDocument();
+  expect(tripButtons()).toHaveLength(2);
+  expect(tripButtons()[0]).toHaveTextContent('05:00Electric CityArrives06:15WaterfrontDuration1 hr 15 min');
+  expect(tripButtons()[1]).toHaveTextContent('05:00Electric CityArrives06:00Cape TownDuration1 hr');
+  expect(screen.queryByRole('table')).not.toBeInTheDocument();
+  expect(screen.queryByRole('list', { name: 'Trip stops and times' })).not.toBeInTheDocument();
 });
 
-test('schedule table does not mix weekend row sequences into a weekday view', () => {
-  const { container } = render(
-    <ScheduleTable
-      selectedDirection="KHAYELITSHA - WYNBERG"
-      selectedServiceDay="monday"
-      scheduleData={{
-        'KHAYELITSHA - WYNBERG': {
-          name: 'KHAYELITSHA - WYNBERG',
-          trips: [weekdayTrip, saturdayTrip],
-          rows,
-        },
-      }}
-      route={{ agency: 'GABS', code: '0068', name: 'WYNBERG - KHAYELITSHA' }}
-    />
-  );
-
-  expect(
-    Array.from(container.querySelectorAll('.stop-cell'), (cell) => cell.textContent)
-  ).toEqual(['MAKHAZA', 'MAKHAYA', 'VILLAGE 3', 'HARARE']);
-  expect(container.querySelector('.route-summary')).toHaveTextContent('lists 4 stops');
-  expect(container.querySelector('tbody')).toHaveTextContent('04:50');
+test('expands trips independently, omits unserved stops, explains via and preserves focus when collapsing', () => {
+  render(<ScheduleTable {...props} />);
+  const first = tripButtons()[0], second = tripButtons()[1];
+  first.focus();
+  fireEvent.click(first);
+  fireEvent.click(second);
+  expect(first).toHaveAttribute('aria-expanded', 'true');
+  expect(second).toHaveAttribute('aria-expanded', 'true');
+  const timelines = screen.getAllByRole('list', { name: 'Trip stops and times' });
+  expect(timelines).toHaveLength(2);
+  expect(timelines[0]).toHaveTextContent('Via · time not published');
+  expect(timelines[0]).not.toHaveTextContent('Not served');
+  expect(timelines[0]).not.toHaveTextContent('Cape Town');
+  expect(screen.getByText('Runs Mon–Thu.')).toBeVisible();
+  fireEvent.click(first);
+  expect(first).toHaveFocus();
+  expect(first).toHaveAttribute('aria-expanded', 'false');
+  expect(second).toHaveAttribute('aria-expanded', 'true');
 });
 
-test('schedule table waits for a service-day selection instead of flashing mixed rows', () => {
-  const { container } = render(
-    <ScheduleTable
-      selectedDirection="KHAYELITSHA - WYNBERG"
-      selectedServiceDay=""
-      scheduleData={{
-        'KHAYELITSHA - WYNBERG': {
-          name: 'KHAYELITSHA - WYNBERG',
-          trips: [weekdayTrip, saturdayTrip],
-          rows,
-        },
-      }}
-      route={{ agency: 'GABS', code: '0068', name: 'WYNBERG - KHAYELITSHA' }}
-    />
-  );
-
-  expect(container.querySelectorAll('.stop-cell')).toHaveLength(0);
-  expect(container.querySelectorAll('thead th')).toHaveLength(1);
+test('boarding filtering shows the selected stop time, remaining duration and a separate untimed group', () => {
+  render(<ScheduleTable {...props} />);
+  fireEvent.change(screen.getByLabelText('Boarding at'), { target: { value: 'mowbray' } });
+  expect(tripButtons()).toHaveLength(2);
+  expect(tripButtons()[0]).toHaveTextContent('05:30MowbrayArrives06:00Cape TownDuration30 min');
+  const untimed = screen.getByRole('region', { name: 'No published boarding time' });
+  expect(within(untimed).getByRole('button')).toHaveTextContent('Time not publishedMowbray');
+  expect(within(untimed).getByRole('button')).toHaveTextContent('Not available');
+  fireEvent.click(tripButtons()[0]);
+  const timeline = screen.getByRole('list', { name: 'Trip stops and times' });
+  expect(timeline).toHaveTextContent('Electric City');
+  expect(timeline).toHaveTextContent('Selected stop');
+  fireEvent.change(screen.getByLabelText('Boarding at'), { target: { value: 'waterfront' } });
+  expect(tripButtons()).toHaveLength(1);
 });
 
-const mondayTrips = [
-  { trip_id: 4, monday: true, friday: true, first_arrival: '17:00:00' },
-  { trip_id: 2, monday: true, tuesday: true, wednesday: true, thursday: true, first_arrival: '13:00:00' },
-  { trip_id: 1, monday: true, tuesday: true, wednesday: true, thursday: true, friday: true, first_arrival: '13:00:00' },
-  { trip_id: 3, friday: true, first_arrival: '12:45:00' },
-];
-const branchRows = [
-  { name: 'PANORAMA', sequence: 0, stop_times: [1, 2].map(trip_id => ({ trip_id, arrival: '13:00:00', stop_time_type: 'scheduled' })) },
-  { name: 'NYANGA', sequence: 1, stop_times: [{ trip_id: 1, stop_time_type: 'via' }, { trip_id: 2, stop_time_type: 'not_served' }] },
-  { name: 'HARARE', sequence: 2, stop_times: [{ trip_id: 1, arrival: '15:15:00', stop_time_type: 'scheduled' }] },
-  { name: 'MAKHAZA', sequence: 3, stop_times: [{ trip_id: 2, arrival: '15:00:00', stop_time_type: 'scheduled' }] },
-];
-
-test('Monday mixes operating patterns chronologically without merging simultaneous journeys', () => {
-  const { getByText, getAllByRole, queryByRole } = render(<ScheduleTable selectedDirection="return" selectedServiceDay="monday"
-    scheduleData={{ return: { name: 'Return', trips: mondayTrips, rows: branchRows } }} />);
-  expect(getByText('Monday timetable')).toBeInTheDocument();
-  const buttons = getAllByRole('button');
-  expect(buttons.map(button => button.textContent)).toEqual([
-    expect.stringContaining('13:00To HARARERuns Mon–Fri'),
-    expect.stringContaining('13:00To MAKHAZARuns Mon–Thu'),
-    expect.stringContaining('17:00'),
-  ]);
-  expect(queryByRole('button', { name: /12:45/ })).toBeNull();
+test('preserves a boarding stop on compatible days and resets it on missing days, direction or route changes', () => {
+  const { rerender } = render(<ScheduleTable {...props} />);
+  fireEvent.change(screen.getByLabelText('Boarding at'), { target: { value: 'mowbray' } });
+  rerender(<ScheduleTable {...props} selectedServiceDay="friday" />);
+  expect(screen.getByLabelText('Boarding at')).toHaveValue('mowbray');
+  rerender(<ScheduleTable {...props} selectedServiceDay="saturday" />);
+  expect(screen.getByLabelText('Boarding at')).toHaveValue('');
+  expect(screen.getByRole('status')).toHaveTextContent('not listed on this day');
+  rerender(<ScheduleTable {...props} />);
+  fireEvent.change(screen.getByLabelText('Boarding at'), { target: { value: 'mowbray' } });
+  rerender(<ScheduleTable {...props} selectedDirection={route.direction_2} />);
+  expect(screen.getByLabelText('Boarding at')).toHaveValue('');
+  fireEvent.change(screen.getByLabelText('Boarding at'), { target: { value: 'mowbray' } });
+  rerender(<ScheduleTable {...props} route={{ ...route, id: 99 }} selectedDirection={route.direction_2} />);
+  expect(screen.getByLabelText('Boarding at')).toHaveValue('');
 });
 
-test('trip details show only served stops, explain via, and restore keyboard focus', () => {
-  HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
-  HTMLDialogElement.prototype.close = function () { this.removeAttribute('open'); };
-  const { getByRole, getByText, queryByRole } = render(<ScheduleTable selectedDirection="return" selectedServiceDay="monday"
-    scheduleData={{ return: { trips: mondayTrips, rows: branchRows } }} />);
-  const opener = getByRole('button', { name: /13:00 to HARARE/ });
-  opener.focus();
-  fireEvent.click(opener);
-  expect(getByRole('dialog')).toHaveTextContent('NYANGA');
-  expect(getByRole('dialog')).not.toHaveTextContent('MAKHAZA');
-  expect(getByText(/passes through; no time listed/)).toBeInTheDocument();
-  fireEvent.click(getByRole('button', { name: 'Close' }));
-  expect(queryByRole('dialog')).toBeNull();
-  expect(opener).toHaveFocus();
+test('service-day flags select Friday, Saturday and holiday journeys without mixing row vectors', () => {
+  expect(getVisibleTrips(trips, 'friday', rows).map(t => t.trip_id)).toEqual([2, 3]);
+  expect(getVisibleTrips(trips, 'saturday', rows).map(t => t.trip_id)).toEqual([4]);
+  expect(getVisibleTrips(trips, 'public_holiday', rows).map(t => t.trip_id)).toEqual([5]);
+  const { rerender } = render(<ScheduleTable {...props} selectedServiceDay="sunday" />);
+  expect(screen.getByText('No trips listed for Sunday')).toBeInTheDocument();
+  expect(tripButtons()).toHaveLength(0);
+  rerender(<ScheduleTable {...props} selectedServiceDay="" />);
+  expect(screen.getByText('Choose a service day')).toBeInTheDocument();
+  expect(tripButtons()).toHaveLength(0);
+  rerender(<ScheduleTable {...props} selectedServiceDay="public_holiday" />);
+  fireEvent.click(tripButtons()[0]);
+  expect(screen.getByText('Runs Public Holiday.')).toBeVisible();
+  expect(getServiceBadge({ monday: true, tuesday: true, thursday: true, public_holiday: true })).toBe('Mon–Tue, Thu, Public Holiday');
 });
 
-test('Friday, weekend and holiday views use trip flags and describe their selected day', () => {
-  const trips = [...mondayTrips, saturdayTrip, { trip_id: 7, public_holiday: true, first_arrival: '09:00:00' }];
-  const scheduleData = { return: { trips, rows: branchRows } };
-  const { rerender, getByRole, queryByRole } = render(<ScheduleTable selectedDirection="return"
-    selectedServiceDay="friday" scheduleData={scheduleData} />);
-  expect(getByRole('heading', { name: 'Friday timetable' })).toBeInTheDocument();
-  expect(getByRole('button', { name: /12:45/ })).toBeInTheDocument();
-  expect(queryByRole('button', { name: /runs Mon–Thu/ })).toBeNull();
-  rerender(<ScheduleTable selectedDirection="return" selectedServiceDay="saturday" scheduleData={scheduleData} />);
-  expect(getByRole('button', { name: /runs Sat/ })).toBeInTheDocument();
-  rerender(<ScheduleTable selectedDirection="return" selectedServiceDay="public_holiday" scheduleData={scheduleData} />);
-  expect(getByRole('heading', { name: 'Public holiday timetable' })).toBeInTheDocument();
-  expect(getByRole('button', { name: /runs Public Holiday/ })).toBeInTheDocument();
-});
-
-test('partial and overnight journeys sort by first timed stop, retaining different intermediate stops', () => {
-  const trips = [1, 2].map(trip_id => ({ trip_id, monday: true, first_arrival: '00:10:00' }));
-  const journeyRows = [
-    { name: 'Origin', sequence: 0, stop_times: trips.map(t => ({ trip_id: t.trip_id, stop_time_type: 'not_served' })) },
-    { name: 'Board here', sequence: 1, stop_times: trips.map(t => ({ trip_id: t.trip_id, arrival: '23:50:00' })) },
-    { name: 'Branch', sequence: 2, stop_times: [{ trip_id: 2, stop_time_type: 'via' }] },
-    { name: 'Destination', sequence: 3, stop_times: trips.map(t => ({ trip_id: t.trip_id, arrival: '00:10:00' })) },
+test('overnight journeys retain stop sequence, calculate elapsed time and label next-day times', () => {
+  const overnight = [{ trip_id: 10, monday: true }];
+  const nightRows = [
+    { name: 'Origin', sequence: 0, stop_times: [cell(10, '23:50:00')] },
+    { name: 'Middle', sequence: 1, stop_times: [cell(10, '00:10:00')] },
+    { name: 'Destination', sequence: 2, stop_times: [cell(10, '00:25:00')] },
   ];
-  const visible = getVisibleTrips(trips, 'monday', journeyRows);
-  expect(visible.map(t => t.details.firstTime)).toEqual(['23:50:00', '23:50:00']);
-  expect(getTripDetails(trips[0], journeyRows).stops.map(s => s.name)).toEqual(['Board here', 'Destination']);
-  expect(getTripDetails(trips[1], journeyRows).stops.map(s => s.name)).toEqual(['Board here', 'Branch', 'Destination']);
+  expect(getTripDetails(overnight[0], nightRows).durationMinutes).toBe(35);
+  expect(getTripDetails(overnight[0], nightRows, 'middle').durationMinutes).toBe(15);
+  render(<ScheduleTable {...props} scheduleData={{ [route.direction_1]: { trips: overnight, rows: nightRows } }} />);
+  expect(tripButtons()[0]).toHaveTextContent('00:25Next day');
+  expect(tripButtons()[0]).toHaveTextContent('35 min');
+});
+
+test('does not replace an untimed endpoint with an intermediate time or claim a duration', () => {
+  const partialRows = [
+    { name: 'Start', sequence: 0, stop_times: [cell(1, null, 'via')] },
+    { name: 'First timing point', sequence: 1, stop_times: [cell(1, '08:00:00')] },
+    { name: 'Last timing point', sequence: 2, stop_times: [cell(1, '09:00:00')] },
+    { name: 'Destination', sequence: 3, stop_times: [cell(1, null, 'scheduled')] },
+  ];
+  const details = getTripDetails(trips[1], partialRows);
+  expect(details.firstStop.name).toBe('Start');
+  expect(details.lastStop.name).toBe('Destination');
+  expect(details.departureMinutes).toBeNull();
+  expect(details.arrivalMinutes).toBeNull();
+  expect(details.durationMinutes).toBeNull();
+});
+
+test('explains inconsistent published times without removing loop visits or adding days', () => {
+  const loopRows = [
+    { name: 'Start', sequence: 1, stop_times: [cell(1, '22:40:00')] },
+    { name: 'Loop stop', sequence: 2, stop_times: [cell(1, '22:45:00')] },
+    { name: 'Turnaround', sequence: 3, stop_times: [cell(1, '22:50:00')] },
+    { name: 'Loop stop', sequence: 4, stop_times: [cell(1, '22:45:00')] },
+    { name: 'Crown', sequence: 5, stop_times: [cell(1, '23:06:00')] },
+  ];
+  render(<ScheduleTable {...props} scheduleData={{ [route.direction_1]: { trips: [trips[1]], rows: loopRows } }} />);
+  expect(tripButtons()[0]).toHaveTextContent('Duration26 min');
+  fireEvent.click(tripButtons()[0]);
+  expect(screen.getByText(/Some published stop times are out of order/)).toBeVisible();
+  expect(screen.getByText('Published time needs checking')).toBeVisible();
+  expect(within(screen.getByRole('list', { name: 'Trip stops and times' })).getAllByRole('listitem')).toHaveLength(5);
+  expect(screen.queryByText('Next day')).not.toBeInTheDocument();
+});
+
+test('merges stop names across row sequences without mixing individual journeys', () => {
+  const repeated = [...rows, { name: '  MOWBRAY  ', sequence: 4, stop_times: [cell(4, '06:30:00')] }];
+  const allMonday = trips.map(t => ({ ...t, monday: true }));
+  render(<ScheduleTable {...props} scheduleData={{ [route.direction_1]: { trips: allMonday, rows: repeated } }} />);
+  expect(within(screen.getByLabelText('Boarding at')).getAllByRole('option', { name: /mowbray/i })).toHaveLength(1);
+  expect(normalizeStopName('  MOWBRAY  ')).toBe('mowbray');
 });

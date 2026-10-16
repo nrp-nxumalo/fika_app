@@ -1,44 +1,79 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { trackEvent } from './analytics';
-
-const getRouteLabel = (route) => {
-  return route.code ? `${route.code} - ${route.name}` : route.name;
-};
+import { filterRoutes, getAgencyDisplayName } from './routeUtils';
+import { RouteTileContent } from './RouteLinkList';
+import './RouteDiscovery.css';
 
 const SchedulesDropdown = ({
   className = '',
   placeholder = 'Search route...',
   onRouteSelect,
   onAgencyChange,
-  route,
-  schedules,
-  selectedAgency,
+  schedules = [],
+  selectedAgency = '',
   searchLocation = 'timetable_search',
+  query: controlledQuery,
+  onQueryChange,
+  showResults = true,
 }) => {
-  const [query, setQuery] = useState('');
+  const [localQuery, setLocalQuery] = useState('');
   const [showOptions, setShowOptions] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
   const lastTrackedSearch = useRef('');
+  const resultsRef = useRef(null);
+  const resultsId = useId();
+  const query = controlledQuery === undefined ? localQuery : controlledQuery;
+  const resultsOpen = showResults && showOptions;
 
   const agencies = [...new Set(schedules.map((schedule) => schedule.agency))].filter(Boolean);
+  const filtered = filterRoutes(schedules, query, selectedAgency);
+
+  const setQuery = (value) => {
+    if (controlledQuery === undefined) setLocalQuery(value);
+    onQueryChange?.(value);
+  };
 
   const handleAgencyChange = (event) => {
     const agency = event.target.value;
 
     onAgencyChange?.(agency);
 
-    setQuery('');
+    setActiveIndex(-1);
   };
 
   const handleRouteSelect = (selectedOption) => {
-    const routeObj = schedules.find((schedule) => schedule.id === selectedOption.id);
-
-    onRouteSelect?.(routeObj, { source: searchLocation });
+    onRouteSelect?.(selectedOption, { source: searchLocation });
+    setQuery('');
+    setShowOptions(false);
+    setActiveIndex(-1);
   };
 
-  const filtered = schedules.filter((schedule) =>
-    (!selectedAgency || schedule.agency === selectedAgency) &&
-    getRouteLabel(schedule).toLowerCase().includes(query.toLowerCase())
-  );
+  const handleKeyDown = (event) => {
+    if (event.key === 'Escape') {
+      setShowOptions(false);
+      setActiveIndex(-1);
+    } else if (showResults && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+      event.preventDefault();
+      setShowOptions(true);
+      if (!filtered.length) return;
+      setActiveIndex((index) => event.key === 'ArrowDown'
+        ? (index + 1) % filtered.length
+        : (index <= 0 ? filtered.length - 1 : index - 1));
+    } else if (event.key === 'Enter' && filtered.length && (!showResults || resultsOpen)) {
+      event.preventDefault();
+      handleRouteSelect(filtered[activeIndex] || filtered[0]);
+    }
+  };
+
+  useEffect(() => {
+    setActiveIndex(-1);
+  }, [query, selectedAgency]);
+
+  useEffect(() => {
+    if (resultsOpen && activeIndex >= 0) {
+      resultsRef.current?.children[activeIndex]?.scrollIntoView?.({ block: 'nearest' });
+    }
+  }, [activeIndex, resultsOpen]);
 
   useEffect(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -75,45 +110,60 @@ const SchedulesDropdown = ({
   }, [filtered.length, query, searchLocation, selectedAgency]);
 
   return (
-    <div className={`schedule-picker ${className}`.trim()}>
-      {agencies.length > 0 && (
-        <select
-          className="agency-select"
-          value={selectedAgency}
-          onChange={handleAgencyChange}
-        >
-          {agencies.map((agency) => (
-            <option key={agency} value={agency}>
-              {agency}
-            </option>
-          ))}
-        </select>
-      )}
+    <div className={`schedule-picker route-search-picker ${className}`.trim()}>
+      <select
+        className="agency-select"
+        aria-label="Operator"
+        value={selectedAgency || ''}
+        onChange={handleAgencyChange}
+      >
+        <option value="">All operators</option>
+        {agencies.map((agency) => (
+          <option key={agency} value={agency}>
+            {getAgencyDisplayName(agency)}
+          </option>
+        ))}
+      </select>
       <div className="dropdown">
         <input
           type="text"
+          role={showResults ? 'combobox' : 'searchbox'}
+          aria-label="Search routes"
+          aria-autocomplete={showResults ? 'list' : undefined}
+          aria-expanded={showResults ? resultsOpen : undefined}
+          aria-controls={resultsOpen ? resultsId : undefined}
+          aria-activedescendant={resultsOpen && filtered[activeIndex] ? `${resultsId}-${activeIndex}` : undefined}
+          autoComplete="off"
           value={query}
-          placeholder={route ? getRouteLabel(route) : placeholder}
-          onChange={(event) => setQuery(event.target.value)}
+          placeholder={placeholder}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setShowOptions(true);
+          }}
           onFocus={() => setShowOptions(true)}
-          onBlur={() => setTimeout(() => setShowOptions(false), 100)}
+          onBlur={() => setShowOptions(false)}
+          onKeyDown={handleKeyDown}
         />
-        {showOptions && (
-          <ul className="dropdown-menu">
-            {filtered.map((schedule) => (
-              <li
-                key={schedule.id}
-                onMouseDown={() => {
-                  handleRouteSelect(schedule);
-                  setQuery('');
-                  setShowOptions(false);
-                }}
-              >
-                <span>{getRouteLabel(schedule)}</span>
-                <small>{schedule.agency}</small>
-              </li>
-            ))}
-          </ul>
+        {resultsOpen && (
+          <div className="dropdown-menu route-search-results">
+            <ul id={resultsId} role="listbox" aria-label="Matching routes" ref={resultsRef}>
+              {filtered.map((schedule, index) => (
+                <li
+                  key={schedule.id || `${schedule.agency}:${schedule.code}:${schedule.name}`}
+                  id={`${resultsId}-${index}`}
+                  role="option"
+                  aria-selected={index === activeIndex}
+                  className="route-search-option"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onMouseEnter={() => setActiveIndex(index)}
+                  onClick={() => handleRouteSelect(schedule)}
+                >
+                  <RouteTileContent route={schedule} />
+                </li>
+              ))}
+            </ul>
+            {filtered.length === 0 && <p className="route-search-empty" role="status">No routes found. Try another place, route number or operator.</p>}
+          </div>
         )}
       </div>
     </div>

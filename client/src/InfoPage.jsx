@@ -48,14 +48,7 @@ export const INFO_PAGES = {
       'You may use the site for personal timetable lookup. Automated scraping or abusive request patterns are not permitted.',
     ],
   },
-  '/data-reliability': {
-    title: 'Timetable Source Reliability',
-    eyebrow: 'Evidence, not promises',
-    body: [
-      'Source accuracy means Fika correctly displays the timetable published in the cited operator PDF. Fika checks source fingerprints daily, holds changes for human review, and records weekly sample audits.',
-      'Operational punctuality means a bus actually arrives at the published time. Fika does not currently measure live operations and cannot claim to prove punctuality.',
-    ],
-  },
+
 };
 
 export default function InfoPage({ page }) {

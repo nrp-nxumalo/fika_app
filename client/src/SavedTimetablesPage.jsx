@@ -6,10 +6,9 @@ import {
   setTimetableSaved,
 } from './timetableCache';
 import {
-  getAgencyDisplayName,
-  getRouteLabel,
   getTimetablePath,
 } from './routeUtils';
+import { RouteTileContent } from './RouteLinkList';
 import { getOnlineState, trackEvent } from './analytics';
 
 const formatStoredDate = (timestamp) => {
@@ -135,14 +134,22 @@ export default function SavedTimetablesPage({ schedules, onViewRoute }) {
             <div className="saved-grid">
               {savedTimetables.map((record) => {
                 const route = record.routeSnapshot;
+                const currentRoute = route && schedules.find((schedule) => route.agency && route.code
+                  ? schedule.agency === route.agency && String(schedule.code) === String(route.code)
+                  : String(schedule.id) === String(record.routeId));
+                const tileRoute = route && {
+                  ...route,
+                  timetableStatus: currentRoute
+                    ? currentRoute.timetableStatus
+                    : route.timetableStatus && { ...route.timetableStatus, cached: true },
+                };
                 const pending = pendingRouteId === record.routeId;
 
                 return (
-                  <article className="saved-card" key={record.routeId}>
+                  <article className="saved-card route-saved-card" key={record.routeId}>
                     {route ? (
                       <>
-                        <p className="saved-operator">{getAgencyDisplayName(route.agency)}</p>
-                        <h2>{getRouteLabel(route)}</h2>
+                        <RouteTileContent route={tileRoute} titleAs="h2" />
                         <p className="saved-date">
                           {record.savedAt ? `Saved ${formatStoredDate(record.savedAt)}` : 'Saved for offline use'}
                           {record.lastViewedAt ? ` · Viewed ${formatStoredDate(record.lastViewedAt)}` : ''}

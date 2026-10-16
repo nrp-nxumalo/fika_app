@@ -46,7 +46,7 @@ test('lists, opens, and removes a saved timetable only after IndexedDB succeeds'
   const onViewRoute = jest.fn();
   render(<SavedTimetablesPage schedules={[]} onViewRoute={onViewRoute} />);
 
-  const routeHeading = await screen.findByRole('heading', { name: '0004 - ATLANTIS - CAPE TOWN' });
+  const routeHeading = await screen.findByRole('heading', { name: 'Atlantis → Cape Town' });
   expect(routeHeading).toBeInTheDocument();
   fireEvent.click(screen.getByRole('link', { name: 'View timetable' }));
   expect(onViewRoute).toHaveBeenCalledWith(savedRecord.routeSnapshot);
@@ -54,6 +54,30 @@ test('lists, opens, and removes a saved timetable only after IndexedDB succeeds'
   fireEvent.click(screen.getByRole('button', { name: 'Remove from saved' }));
   await waitFor(() => expect(setTimetableSaved).toHaveBeenCalledWith(savedRecord.routeSnapshot, false));
   expect(await screen.findByRole('heading', { name: 'No saved timetables yet' })).toBeInTheDocument();
+});
+
+test('matches current notice data by operator and code even after route IDs change', async () => {
+  getSavedTimetables.mockResolvedValue([{
+    ...savedRecord,
+    routeSnapshot: { ...savedRecord.routeSnapshot, timetableStatus: { label: 'Old notice', kind: 'pending' } },
+  }]);
+  render(<SavedTimetablesPage schedules={[{
+    ...savedRecord.routeSnapshot,
+    id: 999,
+    timetableStatus: { label: 'Timetable needs updating', kind: 'expired', cached: true },
+  }]} onViewRoute={() => {}} />);
+  expect(await screen.findByText('Timetable needs updating · last known')).toBeInTheDocument();
+  expect(screen.queryByText('Old notice')).not.toBeInTheDocument();
+});
+
+test('clears an old saved notice when the current catalogue has no notice', async () => {
+  getSavedTimetables.mockResolvedValue([{
+    ...savedRecord,
+    routeSnapshot: { ...savedRecord.routeSnapshot, timetableStatus: { label: 'Old notice', kind: 'pending' } },
+  }]);
+  render(<SavedTimetablesPage schedules={[savedRecord.routeSnapshot]} onViewRoute={() => {}} />);
+  expect(await screen.findByRole('heading', { name: 'Atlantis → Cape Town' })).toBeInTheDocument();
+  expect(screen.queryByText('Old notice')).not.toBeInTheDocument();
 });
 
 test('keeps unresolved legacy records removable without offering a broken route link', async () => {

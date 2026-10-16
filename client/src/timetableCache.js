@@ -1,6 +1,7 @@
 const DB_NAME = 'fika-timetable-cache-v2';
 const DB_VERSION = 1;
 const SCHEDULES_KEY = 'all-schedules';
+const STATUS_KEY = 'timetable-status';
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RECENT_TIMETABLE_LIMIT = 5;
 
@@ -106,6 +107,28 @@ export const saveSchedulesToCache = async (schedules) => {
     );
   } catch (error) {
     console.error('Error saving schedules to cache:', error);
+  }
+};
+
+// Status evidence has its own timestamp and never changes the age of saved times.
+export const getCachedTimetableStatus = async () => {
+  try {
+    const record = await withStore(STORES.schedules, 'readonly', (store) =>
+      requestToPromise(store.get(STATUS_KEY))
+    );
+    return record?.data || null;
+  } catch {
+    return null;
+  }
+};
+
+export const saveTimetableStatusToCache = async (data) => {
+  try {
+    await withStore(STORES.schedules, 'readwrite', (store) =>
+      store.put({ id: STATUS_KEY, data })
+    );
+  } catch {
+    // Notices are optional; storage failures must not prevent timetable use.
   }
 };
 

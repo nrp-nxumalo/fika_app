@@ -130,6 +130,88 @@ export const getRouteEndpoints = (route) => {
   return parts.length >= 2 ? [parts[0], parts[parts.length - 1]] : parts;
 };
 
+const parseRoutePresentation = (value) => {
+  const normalized = String(value || '').replace(/^to\s+/i, '').trim();
+  const [journey, ...viaParts] = normalized.split(/\s+via\s+/i);
+  const places = journey.split(/\s+(?:[-–—]|→|to)\s+/i).map(formatRoutePlace).filter(Boolean);
+  const intermediate = viaParts.length
+    ? viaParts.join(' via ').split(/\s+[-–—]\s+/).map(formatRoutePlace).filter(Boolean)
+    : places.slice(1, -1);
+
+  return {
+    origin: places[0] || '',
+    destination: places.length > 1 ? places[places.length - 1] : '',
+    intermediate,
+  };
+};
+
+const matchingVia = (first, second) => {
+  const normalize = (places) => places.map((place) => place.toLowerCase());
+  const left = normalize(first);
+  const right = normalize(second);
+  return JSON.stringify(left) === JSON.stringify(right) ||
+    JSON.stringify(left) === JSON.stringify([...right].reverse());
+};
+
+export const getDirectionDestination = (route, direction) => {
+  const directionName = typeof direction === 'string' ? direction : direction?.name || direction?.direction;
+  const selected = parseRoutePresentation(String(directionName || route?.name || '').trim());
+  return selected.destination || selected.origin;
+};
+
+// Presentation is deliberately separate from the original names used by URLs and SEO.
+export const getRoutePresentation = (route, direction) => {
+  const base = parseRoutePresentation(route?.name);
+  const directions = getRouteDirections(route).map(parseRoutePresentation);
+  const metadataVia = directions.map((item) => item.intermediate);
+  const hasMetadataVia = metadataVia.some((places) => places.length > 0);
+  let sharedVia = hasMetadataVia
+    ? (metadataVia.every((places) => matchingVia(places, metadataVia[0])) ? metadataVia[0] : [])
+    : base.intermediate;
+  if (hasMetadataVia && directions[0]?.destination.toLowerCase() === base.origin.toLowerCase()) {
+    sharedVia = [...sharedVia].reverse();
+  }
+  const directionName = typeof direction === 'string' ? direction : direction?.name || direction?.direction;
+  const selected = directionName ? parseRoutePresentation(directionName) : base;
+  let origin = selected.origin || base.origin;
+  let destination = selected.destination;
+
+  if (directionName && !destination && base.destination) {
+    // Some catalogues store only “To Destination” as the direction name.
+    const target = selected.origin.toLowerCase();
+    if (target === base.origin.toLowerCase() || target === base.destination.toLowerCase()) {
+      origin = target === base.origin.toLowerCase() ? base.destination : base.origin;
+      destination = selected.origin;
+    } else {
+      return { origin: '', destination: selected.origin, via: '', label: formatRoutePlace(directionName) };
+    }
+  }
+
+  let intermediate = directionName && selected.intermediate.length
+    ? selected.intermediate
+    : sharedVia;
+  if (directionName && !selected.intermediate.length && origin.toLowerCase() === base.destination.toLowerCase()) {
+    intermediate = [...intermediate].reverse();
+  }
+
+  return {
+    origin,
+    destination,
+    via: intermediate.join(' · '),
+    label: [origin, destination].filter(Boolean).join(' → '),
+  };
+};
+
+export const filterRoutes = (routes = [], query = '', agency = '') => {
+  const terms = String(query || '').toLowerCase().trim().split(/\s+/).filter(Boolean);
+  return (routes || []).filter((route) => {
+    if (!route || (agency && route.agency !== agency)) return false;
+    const searchable = [route.code, route.name, route.agency, getAgencyDisplayName(route.agency), ...getRouteDirections(route)]
+      .filter(Boolean).join(' ').toLowerCase();
+    return terms.every((term) => searchable.includes(term));
+  });
+};
+
 export const getRouteIntentLabel = (route) => {
   const code = route?.code ? ` ${route.code}` : '';
   return `${getAgencyDisplayName(route?.agency)}${code} ${getRouteEndpoints(route).join(' to ')} bus times`

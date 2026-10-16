@@ -6,7 +6,9 @@ easier than downloading static PDFs from transit websites.
 ## 🚀 Features
 
 - 🔍 **Searchable Timetables**: Quickly search for a specific route’s schedule.
-- 🔁 **Route Direction Toggle**: Flip between outbound and return directions for any route using a convenient radio button.
+- 🔁 **Route Directions**: Switch direction or service day while keeping route search within reach.
+- 🕒 **Compact Trip Lists**: Compare departure, arrival and duration, then choose **Show stops** for the full stop timeline and operating days.
+- 📍 **Boarding Stops**: Find departures from an intermediate stop without losing the full journey for context.
 - 🧭 **Cleaner UI**: No more sifting through PDF documents—FikaApp presents the data in a clean and readable format.
 - 📱 **Saved Offline Timetables**: Pin timetable data in the browser and reopen it from one offline-ready hub.
 - 🚌 **Current Support**: Displays **MyCiTi** and **Golden Arrow** timetables.
@@ -41,6 +43,10 @@ Numeric database IDs remain internal to `/schedule_times/:id` and `/api/v2/sched
 Timetables pinned with **Save offline** appear at `/saved-timetables`. Saved route metadata and timetable payloads remain in that browser's IndexedDB; they are not attached to an account or synced between devices. The production service worker caches only the application shell and static assets so the saved hub and cached timetable URLs can cold-start without a network connection. API timetable payloads are not stored in Cache Storage.
 
 Offline access requires at least one successful online visit on the browser. Removing a timetable from the saved hub unpins it but leaves the normal short-lived recent-view cache behavior intact.
+
+Route discovery defaults to all operators, with 24 compact route tiles and **Show more routes** adding another 24. Timetables default to today's weekday in Africa/Johannesburg; Public Holiday remains an explicit selection. Trip rows start collapsed and support keyboard expansion and independent comparison. Boarding-stop names are merged across service patterns, and only published endpoint times are used for durations. Overnight times show their day offset, while untimed via points do not imply boarding availability.
+
+Status notices are cached separately from timetable times and identified as last-known information when offline. Reconnecting refreshes the current route and its notices. Existing saved timetable records and timetable API formats remain compatible.
 
 ## Timetable source verification
 
@@ -107,8 +113,16 @@ Operational steps:
 1. Inspect a non-successful daily run and every `changed_review_required` or missing source in the private review page.
 2. Compare the stored PDF, route/directions, service-day coverage, effective dates, departure counts, changed times, stops, and footnotes. Record a meaningful review note before approval.
 3. Do not approve a parser-failure candidate. Fix the parser, bump its version, run the checker again, and review the new extraction.
-4. Complete every weekly audit sample in the private page. The public `/data-reliability` page shows the exact match count only after all samples are reviewed; any mismatch marks its sources for review.
-5. Treat `/data-reliability` warnings as evidence gaps. A failed/old daily check, an audit older than ten days, or a timetable publication newer than the audit makes the public evidence non-current.
+4. Complete every weekly audit sample in the private page. The diagnostic `/api/reliability` endpoint exposes the exact match count after review; any mismatch marks its sources for review.
+5. Treat diagnostic reliability warnings as evidence gaps. A failed/old daily check, an audit older than ten days, or a timetable publication newer than the audit makes the diagnostic evidence non-current. These conditions alone do not mark passenger timetables expired.
+
+### Passenger timetable notices
+
+`GET /api/timetable-status` provides a compact, read-only status response independently of precomputed timetable payloads. Its `checked_at` timestamp accompanies route identity (`agency`, `code`, `route_id`) and direction contributions (`id`, `name`, `service_days`, `effective_date`, `valid_until`, `expired`, `pending`, `pending_effective_date`, `official_source_url`, `pending_source_url`). A direction can have several contributions when weekday, weekend or holiday evidence differs. HTTP caching is limited to five minutes with mandatory revalidation; unavailable schema or database evidence returns 503 without blocking timetable access.
+
+Expiry comes only from a valid Golden Arrow `_from_YYYYMMDD_to_YYYYMMDD_NNNNNN.pdf` filename on the exact published source, matching the numbered direction. Missing, invalid, sentinel `99999999`, and other-section dates remain unknown. Expiry begins after the end date in Johannesburg and does not remove trips. Pending notices use relevant changed source revisions and the existing competing-source publication priorities; failed downloads and redundant PDF copies alone do not create a notice. Future proposed effective dates are informational until publication.
+
+The former `/data-reliability` page redirects permanently to `/`. Source diagnostics, review, audits, approvals, withdrawals and automatic publication policy remain available through the existing API and private admin console.
 
 The original sibling scripts are useful historical references, but they sit outside this Git/Render service root and skip already named files. Do not schedule `refresh_fika_timetables.sh`: it deletes production schedules before reimporting and bypasses the review gate. The package and approval workflow above are the maintained path.
 
