@@ -108,6 +108,34 @@ Set these values:
 - Optional pacing controls: `TIMETABLE_REQUEST_INTERVAL_SECONDS` (never below 1.5), `TIMETABLE_REQUEST_JITTER_SECONDS`, `TIMETABLE_HTTP_RETRIES`, and `TIMETABLE_HTTP_TIMEOUT_SECONDS`.
 - Optional audit target: `TIMETABLE_AUDIT_SAMPLE_SIZE` (default 200; never below 100).
 
+The checker exits **0** only for `succeeded`; both `partial_failure` and `failed`
+exit **1**. Successfully downloaded PDFs remain saved even if another source
+fails. The failure count includes download/processing errors, PDFs with failed
+sections (once per PDF), missing catalogue sources, and automatic-review errors;
+an audit-planning exception also fails the run. Duplicate-URL discovery warnings
+and ordinary changes awaiting approval do not fail it. Missing sources and parser
+errors can recur each day until resolved.
+
+Cron output streams individual failures with the source key, URL, processing
+stage, HTTP status where available, and actual parser error/pages. Compact
+operator and final summaries omit the large duplicate-URL lists and per-timetable
+review lists; the full evidence remains in PostgreSQL. `failure_counts` separates
+source failures by stage; `sections_failed` counts individual section issues.
+
+To recover errors from an existing run (including runs with truncated cron logs),
+run this in the deployed service shell with `DATABASE_URL` already configured:
+
+```bash
+python -m timetable_verification.report_run
+# Or inspect a particular saved check:
+python -m timetable_verification.report_run --run-id 123
+```
+
+This uses a read-only database session, prints failures/missing sources, actual
+GABS document errors and automatic-review failures, and makes no downloads or
+publication changes. It defaults to the latest saved run and exits 0 when the
+report succeeds, regardless of that historical run's status.
+
 Operational steps:
 
 1. Inspect a non-successful daily run and every `changed_review_required` or missing source in the private review page.

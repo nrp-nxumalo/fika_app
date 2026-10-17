@@ -1,8 +1,12 @@
+import io
+import json
 import unittest
+from contextlib import redirect_stdout
+from unittest.mock import patch
 
 from timetable_verification.adapters.base import DiscoveredSource, OperatorAdapter
-from timetable_verification.check_sources import DailyChecker
-from timetable_verification.http import HttpResponse
+from timetable_verification.check_sources import DailyChecker, main
+from timetable_verification.http import HttpResponse, RequestFailure
 from timetable_verification.repository import IncompleteCatalogueError, StagedVersion
 
 
@@ -125,6 +129,84 @@ class FakeRepository:
 
 
 class DailyCheckerTest(unittest.TestCase):
+    def test_download_failure_logs_url_and_http_status_and_continues(self):
+        class Requester(FakeRequester):
+            def get_pdf(self, url, referer=None):
+                if 'myciti' in url:
+                    raise RequestFailure('PDF not found', status=404)
+                return super().get_pdf(url, referer)
+
+        logs = []
+        result = DailyChecker(repository=FakeRepository(), requester=Requester(),
+            adapters=[FakeAdapter('MyCiti'), FakeAdapter('GABS')], log=logs.append).run()
+
+        failure = next(row for row in logs if row['event'] == 'source_failed')
+        self.assertEqual(failure['stage'], 'download')
+        self.assertEqual(failure['http_status'], 404)
+        self.assertEqual(failure['url'], 'https://myciti.test/A1-timetable.pdf')
+        self.assertEqual(failure['error'], 'PDF not found')
+        self.assertEqual(result['operator_results']['MyCiti']['failure_counts'], {'download': 1})
+        self.assertEqual(result['counts']['downloaded'], 1)
+        self.assertEqual(result['status'], 'partial_failure')
+
+    def test_section_errors_include_actual_reason_and_pages_in_logs_and_database(self):
+        document = {'sections': [
+            {'timetable_number': '004901', 'pages': [1], 'extraction': {}},
+            {'timetable_number': '005001', 'pages': [2], 'error': 'ambiguous time 06:00b'},
+        ], 'issues': [{'pages': [3], 'error': 'unrecognized heading'}], 'complete': False}
+
+        class Adapter(FakeAdapter):
+            def parse_document(self, source, data):
+                return document
+
+        class Repository(FakeRepository):
+            def stage_document(self, **kwargs):
+                self.document = kwargs['document']
+                return {'outcome': 'changed', 'changed': 1, 'unchanged': 0, 'failed': 2}
+
+        repository, logs = Repository(), []
+        result = DailyChecker(repository=repository, requester=FakeRequester(),
+            adapters=[Adapter('GABS')], log=logs.append).run()
+
+        errors = [row for row in logs if row['event'] == 'section_parse_failed']
+        self.assertEqual(len(errors), 2)
+        self.assertEqual(errors[0]['timetable_number'], '005001')
+        self.assertEqual(errors[0]['pages'], [2])
+        self.assertEqual(errors[0]['error'], 'ambiguous time 06:00b')
+        self.assertEqual(json.loads(repository.results[0]['error'])[1]['error'], 'unrecognized heading')
+        self.assertEqual(repository.document, document)
+        self.assertEqual(result['counts']['failed'], 1)
+        self.assertEqual(result['operator_results']['GABS']['sections_failed'], 2)
+        self.assertEqual(result['operator_results']['GABS']['failure_counts'], {'parse': 1})
+
+    def test_cli_logs_remain_compact_with_large_catalogue_and_preserve_exit_codes(self):
+        class Adapter(FakeAdapter):
+            def discover(self, requester):
+                return [DiscoveredSource('MyCiti', 'A1', 'https://myciti.test/A1.pdf',
+                    alternate_urls=tuple('https://myciti.test/copy.pdf' for _ in range(10000)),
+                    discovery_warnings=('many copies',))]
+
+        for parse_error, exit_code in [(None, 0), (ValueError('layout changed'), 1)]:
+            with self.subTest(parse_error=parse_error):
+                repository = FakeRepository()
+                repository.close = lambda: None
+                output = io.StringIO()
+                with patch('timetable_verification.check_sources.TimetableRepository.connect', return_value=repository), \
+                     patch('timetable_verification.check_sources.PoliteRequester', return_value=FakeRequester()), \
+                     patch('timetable_verification.check_sources.selected_adapters', return_value=[Adapter('MyCiti', parse_error=parse_error)]), \
+                     redirect_stdout(output):
+                    actual_exit = main(['--database-url', 'unused'])
+                self.assertEqual(actual_exit, exit_code)
+                lines = output.getvalue().splitlines()
+                self.assertTrue(all(len(line) < 3000 for line in lines))
+                summary = json.loads(lines[-1])
+                self.assertEqual(summary['operator_results']['MyCiti']['warnings_count'], 1)
+                self.assertNotIn('alternate_urls', output.getvalue())
+                persisted = repository.finished[1]['operator_results']['MyCiti']
+                self.assertEqual(len(persisted['warnings'][0]['alternate_urls']), 10000)
+                if parse_error:
+                    self.assertIn('layout changed', output.getvalue())
+
     def test_bootstrap_audit_shortfall_is_recorded_without_failing_source_check(self):
         repository = FakeRepository(audit_result={
             "status": "shortfall",

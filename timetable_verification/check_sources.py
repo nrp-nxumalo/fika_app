@@ -7,7 +7,7 @@ import json
 import os
 import time
 import traceback
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 from .adapters import GabsAdapter, MyCitiAdapter, OperatorAdapter
 from .audit import DEFAULT_AUDIT_SAMPLE_SIZE
@@ -34,6 +34,28 @@ def selected_adapters(operator: str) -> List[OperatorAdapter]:
     return [adapter for adapter in adapters if adapter.operator == expected]
 
 
+def emit_log(record: Mapping[str, Any]) -> None:
+    print(json.dumps(record, ensure_ascii=False, sort_keys=True, default=str), flush=True)
+
+
+def compact_result(result: Mapping[str, Any]) -> Dict[str, Any]:
+    """Keep verbose review evidence in PostgreSQL, not one enormous log line."""
+    compact = dict(result)
+    for field in ("warnings", "errors", "timetables"):
+        if field in compact:
+            compact[field + "_count"] = len(compact.pop(field))
+    return compact
+
+
+def document_errors(document: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    return [
+        {"timetable_number": item.get("timetable_number"),
+         "pages": item.get("pages", []), "error": item["error"]}
+        for item in [*document.get("sections", []), *document.get("issues", [])]
+        if item.get("error")
+    ]
+
+
 class DailyChecker:
     def __init__(
         self,
@@ -42,17 +64,24 @@ class DailyChecker:
         requester: PoliteRequester,
         adapters: Sequence[OperatorAdapter],
         audit_sample_size: int = DEFAULT_AUDIT_SAMPLE_SIZE,
+        log: Optional[Callable[[Mapping[str, Any]], None]] = None,
     ) -> None:
         self.repository = repository
         self.requester = requester
         self.adapters = list(adapters)
         self.audit_sample_size = max(100, int(audit_sample_size))
+        self.log = log
+
+    def _log(self, event: str, run_id: int, **details: Any) -> None:
+        if self.log is not None:
+            self.log({"event": event, "run_id": run_id, **details})
 
     def run(self) -> Mapping[str, Any]:
         self.repository.ensure_schema()
         if hasattr(self.repository, "migrate_gabs_sections"):
             self.repository.migrate_gabs_sections()
         run_id = self.repository.start_check_run()
+        self._log("check_started", run_id)
         counts = {
             "discovered": 0,
             "downloaded": 0,
@@ -64,8 +93,11 @@ class DailyChecker:
         audit_failed = False
         try:
             for adapter in self.adapters:
+                self._log("operator_started", run_id, operator=adapter.operator)
                 result = self._check_operator(adapter, run_id, counts)
                 operator_results[adapter.operator] = result
+                self._log("operator_finished", run_id, operator=adapter.operator,
+                          **compact_result(result))
 
             gabs_result = operator_results.get('GABS')
             if gabs_result is not None and hasattr(self.repository, 'review_gabs_timetables'):
@@ -73,9 +105,14 @@ class DailyChecker:
                     automation = self.repository.review_gabs_timetables(run_id, gabs_result)
                     operator_results['gabs_automation'] = automation
                     counts['failed'] += automation.get('failed', 0)
+                    for timetable in automation.get('timetables', []):
+                        if timetable.get('error'):
+                            self._log("automation_failed", run_id, **timetable)
+                    self._log("automation_finished", run_id, **compact_result(automation))
                 except Exception as exc:
                     counts['failed'] += 1
                     operator_results['gabs_automation'] = {'failed': 1, 'error': str(exc)}
+                    self._log("automation_failed", run_id, error=str(exc))
 
             try:
                 audit_result = self.repository.ensure_weekly_audit_plan(
@@ -94,6 +131,7 @@ class DailyChecker:
                     "status": "failed",
                     "error": str(exc),
                 }
+                self._log("audit_failed", run_id, error=str(exc))
                 try:
                     self.repository.record_event(
                         event_type="audit_plan_failed",
@@ -126,6 +164,7 @@ class DailyChecker:
                 "operator_results": operator_results,
             }
         except Exception as exc:
+            self._log("check_failed", run_id, error=str(exc))
             self.repository.fail_running_check(
                 run_id,
                 "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))[:10000],
@@ -146,6 +185,8 @@ class DailyChecker:
             "failed": 0,
             "missing": 0,
             "warnings": [],
+            "errors": [],
+            "failure_counts": {},
         }
         try:
             sources = adapter.discover(self.requester)
@@ -153,6 +194,8 @@ class DailyChecker:
             result["failed"] = 1
             result["error"] = str(exc)
             counts["failed"] += 1
+            result["failure_counts"]["discovery"] = 1
+            self._log("discovery_failed", run_id, operator=adapter.operator, error=str(exc))
             return result
 
         result["discovered"] = len(sources)
@@ -162,6 +205,7 @@ class DailyChecker:
             response = None
             pdf_hash = None
             started = time.monotonic()
+            stage = "source_registration"
             try:
                 source_row = self.repository.upsert_discovered_source(
                     source,
@@ -181,6 +225,7 @@ class DailyChecker:
                         source_id=int(source_row["id"]),
                         details=warning_details,
                     )
+                stage = "download"
                 response = self.requester.get_pdf(
                     source.url,
                     referer=source.catalogue_page,
@@ -188,11 +233,17 @@ class DailyChecker:
                 counts["downloaded"] += 1
                 result["downloaded"] += 1
                 pdf_hash = sha256_bytes(response.body)
+                stage = "parse"
                 if adapter.operator == "GABS" and hasattr(adapter, "parse_document"):
                     try:
                         document = adapter.parse_document(source, response.body)
                     except Exception as exc:
                         document = {"sections": [], "issues": [{"error": str(exc), "pages": []}], "complete": False}
+                    issues = document_errors(document)
+                    for issue in issues:
+                        self._log("section_parse_failed", run_id, operator=adapter.operator,
+                                  source_key=source.source_key, url=source.url, **issue)
+                    stage = "staging"
                     staged = self.repository.stage_document(
                         run_id=run_id, source=source, source_id=int(source_row["id"]),
                         pdf_bytes=response.body, pdf_sha256=pdf_hash, document=document,
@@ -208,17 +259,24 @@ class DailyChecker:
                     if staged["failed"]:
                         counts["failed"] += 1
                         result["failed"] += 1
+                        result["failure_counts"]["parse"] = result["failure_counts"].get("parse", 0) + 1
+                        result["errors"].append({"source_key": source.source_key,
+                            "url": source.url, "stage": "parse", "issues": issues})
+                    stage = "record_result"
                     self.repository.record_check_result(
                         run_id=run_id, source=source, source_id=int(source_row["id"]),
                         outcome="failed" if staged["failed"] else outcome,
                         http_status=response.status, pdf_sha256=pdf_hash,
                         duration_ms=max(0, int((time.monotonic() - started) * 1000)),
-                        error="One or more document sections need attention." if staged["failed"] else None,
+                        error=json.dumps(issues, ensure_ascii=False) if staged["failed"] else None,
                     )
                     continue
                 try:
                     extraction = adapter.parse_pdf(source, response.body)
                 except Exception as parse_error:
+                    self._log("source_parse_failed", run_id, operator=adapter.operator,
+                              source_key=source.source_key, url=source.url, error=str(parse_error))
+                    stage = "quarantine"
                     self.repository.stage_parse_failure(
                         run_id=run_id,
                         source=source,
@@ -232,7 +290,9 @@ class DailyChecker:
                     )
                     counts["changed"] += 1
                     result["changed"] += 1
+                    stage = "parse"
                     raise
+                stage = "staging"
                 staged = self.repository.stage_download(
                     run_id=run_id,
                     source=source,
@@ -247,6 +307,7 @@ class DailyChecker:
                 )
                 counts[staged.outcome if staged.outcome == "unchanged" else "changed"] += 1
                 result[staged.outcome if staged.outcome == "unchanged" else "changed"] += 1
+                stage = "record_result"
                 self.repository.record_check_result(
                     run_id=run_id,
                     source=source,
@@ -262,6 +323,11 @@ class DailyChecker:
                 status = exc.status if isinstance(exc, RequestFailure) else (
                     response.status if response else None
                 )
+                failure = {"source_key": source.source_key, "url": source.url,
+                           "stage": stage, "http_status": status, "error": str(exc)}
+                result["errors"].append(failure)
+                result["failure_counts"][stage] = result["failure_counts"].get(stage, 0) + 1
+                self._log("source_failed", run_id, operator=adapter.operator, **failure)
                 try:
                     self.repository.record_check_result(
                         run_id=run_id,
@@ -275,6 +341,8 @@ class DailyChecker:
                     )
                 except Exception as record_error:
                     result.setdefault("result_recording_errors", []).append(str(record_error))
+                    self._log("result_recording_failed", run_id, operator=adapter.operator,
+                              source_key=source.source_key, error=str(record_error))
 
         try:
             missing = self.repository.mark_missing_sources(
@@ -286,11 +354,15 @@ class DailyChecker:
             result["failed"] += 1
             counts["failed"] += 1
             result["catalogue_coverage_error"] = str(exc)
+            result["failure_counts"]["catalogue_coverage"] = 1
+            self._log("catalogue_coverage_failed", run_id, operator=adapter.operator, error=str(exc))
             return result
         result["missing"] = missing
         if missing:
             result["failed"] += missing
             counts["failed"] += missing
+            result["failure_counts"]["missing"] = missing
+            self._log("sources_missing", run_id, operator=adapter.operator, missing=missing)
         return result
 
 
@@ -436,8 +508,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 requester=requester,
                 adapters=adapters,
                 audit_sample_size=args.audit_sample_size,
+                log=emit_log,
             ).run()
-        print(json.dumps(result, ensure_ascii=False, sort_keys=True, default=str))
+        if not args.dry_run:
+            result = {**result, "operator_results": {
+                name: compact_result(details) for name, details in result["operator_results"].items()
+            }}
+        emit_log(result)
         return 0 if result["status"] == "succeeded" else 1
     finally:
         if repository is not None:
