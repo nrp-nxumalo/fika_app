@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const { Pool } = require('pg');
+const { createDatabasePool, createTimetableStatusPool } = require('./lib/databasePool');
 const compression = require('compression');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -59,7 +59,6 @@ const SEO_CACHE_TTL_MS = 10 * 60 * 1000;
 const SLOW_SEO_RENDER_MS = 1000;
 const PUBLIC_API_CACHE_CONTROL = process.env.PUBLIC_API_CACHE_CONTROL || 'public, max-age=300, stale-while-revalidate=86400';
 const API_RESPONSE_CACHE_ENABLED = process.env.API_RESPONSE_CACHE_ENABLED !== 'false';
-const PG_POOL_MAX = Number(process.env.PG_POOL_MAX) || (IS_PRODUCTION ? 5 : 10);
 const REQUEST_LOGGING_ENABLED = process.env.REQUEST_LOGGING_ENABLED !== 'false';
 const GA4_MEASUREMENT_ID_PATTERN = /^G-[A-Z0-9]+$/i;
 const PRIORITY_AREA_SLUGS = new Set([
@@ -91,25 +90,8 @@ if (IS_PRODUCTION) {
   app.set('trust proxy', 1);
 }
 
-const localPoolConfig = {
-  user: 'njabulonxumalo',
-  host: 'localhost',
-  database: 'fika',
-  port: 5432,
-};
-
-const pool = new Pool(process.env.DATABASE_URL ? {
-  connectionString: process.env.DATABASE_URL,
-  ssl: IS_PRODUCTION ? { rejectUnauthorized: false } : undefined,
-  max: PG_POOL_MAX,
-  idleTimeoutMillis: 30 * 1000,
-  connectionTimeoutMillis: 5 * 1000,
-} : {
-  ...localPoolConfig,
-  max: PG_POOL_MAX,
-  idleTimeoutMillis: 30 * 1000,
-  connectionTimeoutMillis: 5 * 1000,
-});
+const pool = createDatabasePool();
+const timetableStatusPool = createTimetableStatusPool();
 
 const timetableReliabilityHandlers = createTimetableReliabilityHandlers({
   database: pool,
@@ -1775,7 +1757,7 @@ app.get('/api/v2/schedule_times/:id', async (req, res) => {
   }
 });
 
-app.get('/api/timetable-status', createTimetableStatusHandler(pool));
+app.get('/api/timetable-status', createTimetableStatusHandler(timetableStatusPool));
 
 app.get('/api/reliability', async (req, res) => {
   try {

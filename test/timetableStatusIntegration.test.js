@@ -64,6 +64,24 @@ test('status SQL reads exact published provenance and projected legacy changes i
     assert.equal(goldenArrow.pending, true);
     assert.equal(goldenArrow.pending_effective_date, '2026-11-01');
     assert.equal(result.routes.find(route => route.agency === 'MyCiti').directions[0].pending, true);
+
+    // Historical documents must never be expanded or grouped with the live
+    // and pending versions, even when there are many saved revisions.
+    await db.query(`INSERT INTO timetable_source_versions(id,source_id,extraction)
+      SELECT id,2,'{"routes":"not an array"}'::jsonb FROM generate_series(1000,1200) id`);
+    // Multiple trips sharing a published contribution collapse before joining
+    // document/section JSON. Direction provenance still supplies null trip IDs.
+    await db.query(`INSERT INTO trips(id,direction_id,monday,tuesday)
+      SELECT id,2,true,true FROM generate_series(1000,2000) id`);
+    const expanded = await getTimetableStatus(db, { now: new Date('2026-10-14T12:00:00Z') });
+    assert.equal(expanded.routes.length, 2);
+    const myciti = expanded.routes.find(route => route.agency === 'MyCiti');
+    assert.equal(myciti.directions.find(direction => direction.service_days.includes('monday')).pending, true);
+    assert.equal(myciti.directions.find(direction => direction.service_days.includes('tuesday')).pending, false);
+    await db.query(`UPDATE timetable_source_versions SET extraction=(
+      SELECT extraction FROM timetable_source_versions WHERE id=20) WHERE id=21`);
+    const unchanged = await getTimetableStatus(db);
+    assert.ok(unchanged.routes.find(route => route.agency === 'MyCiti').directions.every(direction => !direction.pending));
     await db.query('UPDATE timetable_sections SET pending_version_id=NULL');
     await db.query("UPDATE timetable_sources SET pending_version_id=NULL WHERE NOT section_mode");
     const cleared = await getTimetableStatus(db);

@@ -157,3 +157,78 @@ test('missing evidence schema produces a non-cached 503 response', async () => {
   assert.equal(response.headers['Cache-Control'], 'no-store');
   assert.match(response.body.error, /temporarily unavailable/);
 });
+
+function statusResponse() {
+  return { headers: {}, code: 200,
+    set(key, value) { this.headers[key] = value; return this; },
+    status(value) { this.code = value; return this; },
+    json(value) { this.body = value; return this; } };
+}
+
+test('simultaneous status requests share one refresh and stop using it at five minutes', async () => {
+  let time = now.getTime(), calls = 0;
+  const handler = createTimetableStatusHandler({ async query() {
+    calls += 1;
+    await new Promise(resolve => setImmediate(resolve));
+    return { rows: [] };
+  } }, { clock: () => time });
+  const responses = Array.from({ length: 40 }, statusResponse);
+  await Promise.all(responses.map(response => handler({}, response)));
+  assert.equal(calls, 3);
+  assert.ok(responses.every(response => response.body === responses[0].body));
+  assert.equal(responses[0].headers['Cache-Control'], STATUS_CACHE_CONTROL);
+  time += 120_000;
+  const cached = statusResponse();
+  await handler({}, cached);
+  assert.equal(calls, 3);
+  assert.equal(cached.body.checked_at, now.toISOString());
+  assert.equal(cached.headers['Cache-Control'], 'public, max-age=180, must-revalidate');
+  time += 180_000;
+  const refreshed = statusResponse();
+  await handler({}, refreshed);
+  assert.equal(calls, 6);
+  assert.notEqual(refreshed.body, cached.body);
+});
+
+test('failed refreshes stop queries, share a short cooldown, and recover without serving expired evidence', async () => {
+  let time = now.getTime(), calls = 0, fail = false;
+  const logs = [];
+  const handler = createTimetableStatusHandler({ async query() {
+    calls += 1;
+    if (fail) throw Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+    return { rows: [] };
+  } }, { clock: () => time, logger: { error: entry => logs.push(entry) } });
+  await handler({}, statusResponse());
+  time += 300_000;
+  fail = true;
+  const responses = Array.from({ length: 20 }, statusResponse);
+  await Promise.all(responses.map(response => handler({}, response)));
+  assert.equal(calls, 4); // Only the first query ran, with no abandoned siblings.
+  assert.equal(logs.length, 1);
+  assert.ok(responses.every(response => response.code === 503 && response.headers['Cache-Control'] === 'no-store'));
+  await handler({}, statusResponse());
+  assert.equal(calls, 4);
+  time += 5000;
+  fail = false;
+  const recovered = statusResponse();
+  await handler({}, recovered);
+  assert.equal(recovered.code, 200);
+  assert.equal(calls, 7);
+});
+
+test('server and HTTP caches expire at Johannesburg midnight', async () => {
+  let time = Date.parse('2026-10-14T21:59:59Z'), calls = 0;
+  const handler = createTimetableStatusHandler({ async query(sql) {
+    calls += 1;
+    return { rows: sql.includes('WITH published AS') ? [published()] : [] };
+  } }, { clock: () => time });
+  const before = statusResponse();
+  await handler({}, before);
+  assert.equal(before.body.routes[0].directions[0].expired, false);
+  assert.equal(before.headers['Cache-Control'], 'public, max-age=1, must-revalidate');
+  time += 1000;
+  const after = statusResponse();
+  await handler({}, after);
+  assert.equal(after.body.routes[0].directions[0].expired, true);
+  assert.equal(calls, 6);
+});

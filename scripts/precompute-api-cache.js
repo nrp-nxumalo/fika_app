@@ -1,4 +1,4 @@
-const { Pool } = require('pg');
+const { createDatabasePool } = require('../lib/databasePool');
 const {
   API_CACHE_PAYLOAD_KINDS,
   API_RESPONSE_CACHE_INDEX_SQL,
@@ -12,29 +12,8 @@ const {
   schedulesQuery,
 } = require('../lib/apiPayloads');
 
-const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const SOFT_FAIL = process.argv.includes('--soft-fail');
-const PG_POOL_MAX = Number(process.env.PG_POOL_MAX) || (IS_PRODUCTION ? 5 : 10);
-
-const localPoolConfig = {
-  user: 'njabulonxumalo',
-  host: 'localhost',
-  database: 'fika',
-  port: 5432,
-};
-
-const pool = new Pool(process.env.DATABASE_URL ? {
-  connectionString: process.env.DATABASE_URL,
-  ssl: IS_PRODUCTION ? { rejectUnauthorized: false } : undefined,
-  max: PG_POOL_MAX,
-  idleTimeoutMillis: 30 * 1000,
-  connectionTimeoutMillis: 5 * 1000,
-} : {
-  ...localPoolConfig,
-  max: PG_POOL_MAX,
-  idleTimeoutMillis: 30 * 1000,
-  connectionTimeoutMillis: 5 * 1000,
-});
+const pool = createDatabasePool({ application_name: 'fika-api-precompute' });
 
 async function ensureApiResponseCacheTable(database = pool) {
   await database.query(API_RESPONSE_CACHE_TABLE_SQL);
