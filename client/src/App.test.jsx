@@ -61,9 +61,14 @@ test('home defaults to all operators, shares search with tiles and reveals route
   expect(container.querySelector('.landing-copy')).toHaveTextContent('30 route timetables for Cape Town bus commuters.');
   fireEvent.click(screen.getByRole('button', { name: 'Show more routes' }));
   expect(container.querySelectorAll('.route-tile')).toHaveLength(30);
-  fireEvent.change(screen.getByRole('searchbox', { name: 'Search routes' }), { target: { value: 'Area 30' } });
+  const search = screen.getByRole('combobox', { name: 'Search routes' });
+  fireEvent.change(search, { target: { value: 'Area 30' } });
   expect(container.querySelectorAll('.route-tile')).toHaveLength(1);
-  expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+  expect(screen.getByRole('listbox', { name: 'Matching routes' })).toBeVisible();
+  expect(search).toHaveAttribute('aria-expanded', 'true');
+  fireEvent.click(screen.getByRole('option', { name: /Area 30 → Cape Town/ }));
+  await screen.findByLabelText('Boarding at');
+  expect(window.location.pathname).toBe(getTimetablePath(schedules[29]));
 });
 
 test('commuters can filter boarding, switch direction and search another operator without losing their route', async () => {

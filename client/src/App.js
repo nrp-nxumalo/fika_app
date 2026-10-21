@@ -449,7 +449,6 @@ function LandingPage({
               searchLocation="landing_search"
               query={query}
               onQueryChange={setQuery}
-              showResults={false}
             />
           )}
           <p id="landing-search-helper">
