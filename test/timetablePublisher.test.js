@@ -225,18 +225,19 @@ class RecordingDatabase {
       return { rows, rowCount: rows.length };
     }
 
-    if (/FROM stops .*FOR UPDATE/.test(text)) {
-      if (params[1] === 'Stop A') return { rows: [{ id: 250 }], rowCount: 1 };
-      return { rows: [], rowCount: 0 };
+    if (/SELECT id, name FROM stops/.test(text)) {
+      return { rows: params[1].filter(name => name === 'Stop A').map(name => ({ id: 250, name })) };
     }
-    if (/^INSERT INTO stops /.test(text)) {
-      this.nextStopId += 1;
-      return { rows: [{ id: this.nextStopId }], rowCount: 1 };
+    if (/^INSERT INTO stops/.test(text)) {
+      return { rows: params[1].map(name => ({ id: ++this.nextStopId, name })) };
     }
-    if (/^INSERT INTO trips /.test(text)) {
-      this.nextTripId += 1;
-      this.insertedTrips.push(params);
-      return { rows: [{ id: this.nextTripId }], rowCount: 1 };
+    if (/^INSERT INTO trips/.test(text)) {
+      const records = JSON.parse(params[0]);
+      return { rows: records.map(record => {
+        this.insertedTrips.push([params[1], ...['monday','tuesday','wednesday','thursday','friday','saturday','sunday','public_holiday'].map(day => record[day]),
+          params[2],params[3],params[4],params[5],record.ordinal,params[6]]);
+        return { id: ++this.nextTripId, timetable_trip_ordinal: record.ordinal };
+      }).reverse(), rowCount: records.length };
     }
 
     if (/SELECT to_regclass/.test(text)) return { rows: [{ table_name: 'api_response_cache' }], rowCount: 1 };
@@ -378,7 +379,7 @@ test('canonical validation rejects empty publication data before any production 
     /routes.*must not be empty/
   );
   assert.equal(database.calls[0].text, 'BEGIN');
-  assert.match(database.calls[1].text, /pg_advisory_xact_lock/);
+  assert.ok(database.calls.some(call => /pg_advisory_xact_lock/.test(call.text)));
   assert.equal(database.calls.at(-1).text, 'ROLLBACK');
   assert.equal(database.calls.some((call) => /^(INSERT|UPDATE|DELETE) (routes|directions|trips|stop_times)/.test(call.text)), false);
 });

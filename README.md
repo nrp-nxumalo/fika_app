@@ -279,3 +279,98 @@ node scripts/review-gabs-timetables.js --run-id=123 --dry-run
 This preview does not publish or write classifications. The disabled daily job uses `--record-only` to persist classifications and rebuild summaries. After checking the results, enable `GABS_AUTO_APPROVE=1` in the cron environment; its next successful check also evaluates the existing backlog. Initial timetables still require an approved baseline. Reparse-only tools remain staging-only. Passenger APIs are unchanged; `/api/reliability` adds review disposition, reasons, approval method and automatic-review counts.
 
 Validate with `npm test`, `CI=true npm test --prefix client -- --watchAll=false --runInBand`, and `python -m unittest discover -s tests_python -v`. Set `FIKA_SECTION_TEST_DSN` to an **isolated test database** to include PostgreSQL transaction, duplicate-copy, date, hold, retry, rollback, cache and audit-provenance coverage. The tests create and remove unique schemas.
+
+## Background timetable publication
+
+Manual approval and withdrawal now save a durable job and redirect immediately to
+`/admin/timetable-reliability/jobs/:id`. The status page refreshes while queued or
+running and shows success or a reviewable failure. Recent requests remain linked
+from the review page. Duplicate submissions of the same decision share a job.
+
+The separate Node worker revalidates the signed snapshot or exact revision when
+it executes. Publication and successful job completion commit in one transaction.
+A failed job rolls back all its timetable writes; a disconnected worker leaves a
+recoverable job. A PostgreSQL session lock prevents two workers executing the
+same job, and success is never replayed. Lock timeouts/deadlocks receive up to
+three attempts with a ten-second delay; a failed request can be submitted again
+after reviewing the current evidence. Notes and reviewer identity are preserved.
+
+Deployment order:
+
+1. Run `npm run migrate:timetables` against the shared application database before
+   deploying the new web/checker code. This is the only normal deployment step
+   that runs timetable DDL. It fails after three seconds of lock contention;
+   retry in a quieter period instead of holding up passenger queries.
+2. Deploy the `fika-timetable-publication` background worker from `render.yaml`,
+   with the same `DATABASE_URL` as the web service. Its start command is
+   `npm run worker:timetables`; its pre-deploy command also applies the idempotent
+   migration. A separate running worker service is required for queued jobs and
+   cache refreshes to complete.
+3. Deploy the web service and daily checker. `npm start` now starts the server
+   without rebuilding the entire API cache. Existing web services managed outside
+   this Blueprint should also use `npm run migrate:timetables` as their pre-deploy
+   command. The web server and checker verify the schema version without running
+   DDL in requests or daily checks.
+4. Submit one reviewed timetable and follow its status link. Check that passenger
+   timetable endpoints remain responsive, then compare the published timetable
+   and PDF evidence. No production approval is performed by deployment itself.
+
+For local development, run the migration once, then `npm run dev` and
+`npm run worker:timetables` in separate terminals. `--once` runs a worker pass:
+`npm run worker:timetables -- --once`. An unavailable worker leaves jobs queued
+and existing passenger timetables live; start/restart the worker to resume.
+
+The web process reserves two connections for reviews/jobs, separate from
+`PG_POOL_MAX` passenger connections and the existing one-connection status pool.
+Each worker uses one connection. Account for these connections across all web and
+worker instances. Cron keeps its own connection budget. Review SQL and worker
+SQL disable JIT; worker lock waits and statements are bounded. Moving work out of
+the web process does not remove database CPU/I/O contention, so monitor both.
+
+Trips and stop times are inserted in batches of at most 200 trips. Stop IDs are
+resolved together and returned trip IDs are matched by canonical ordinal, never
+by database return order. Existing route identity, service-family composition,
+provenance, holds, source preferences, audit invalidation and atomicity remain.
+
+Publication invalidates only the affected API cache entries and the shared route
+list, and writes durable cache-refresh requests in the same transaction. The
+worker alternates publication with one cache refresh to avoid starving either.
+Cache refresh takes the publication lock before reading and holds it until the
+new payloads and queue removal commit. A newer publication therefore cannot be
+overwritten by an older cache rebuild. Compression is asynchronous. A failed
+cache refresh remains queued and retries after 30 seconds; live API queries serve
+current committed data during a cache miss. The migration also queues historical
+missing payloads. `npm run precompute:api-cache` remains an optional repair tool
+and now releases the publication lock between routes.
+
+The source registry filters/counts/pages in SQL. Golden Arrow policy filtering
+uses compact metadata for all copies, then fetches detailed evidence only for
+the visible routes, keeping sibling directions together. It no longer expands
+every catalogue PDF's extraction just to obtain its effective date. Missing
+policy summaries are conservatively shown as needing review until prepared;
+publication still performs full validation.
+
+Diagnostic events:
+
+- `publication_job_started` / `publication_job_finished`: job ID, attempts,
+  queue wait and outcome.
+- `publication_transaction`: connection wait, publication-lock wait, validation,
+  SQL write, commit and total timings, plus query count. Transaction diagnostics
+  go to stderr so cron JSON output remains machine-readable.
+- `timetable_admin_request` / `timetable_admin_page_data`: request duration,
+  waiting connection counts, and the number of detailed timetables loaded.
+- `timetable_cache_refresh_failed`: affected route and database error code.
+
+Validation commands (use an isolated database for the integration suites):
+
+```bash
+npm test
+FIKA_PUBLICATION_TEST_DATABASE=fika_publication_perf_test \
+  node --test test/publicationWorkflowIntegration.test.js
+FIKA_SECTION_TEST_DSN='dbname=fika_publication_perf_test host=/tmp' \
+  .venv/bin/python -m unittest tests_python.test_sections_integration -v
+```
+
+The integration tests create and remove unique schemas and cover restart
+recovery, duplicate submissions, concurrent workers, public reads during work,
+stale decisions, rollback, cache races, Golden Arrow snapshots and page scope.

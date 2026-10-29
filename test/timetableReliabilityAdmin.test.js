@@ -119,7 +119,7 @@ test('scheduled routes retain their own date and cannot publish early', () => {
 test('bulk selection rejects tampered, duplicate and stale visible candidates before publication', async () => {
   const sources = [reviewSource(1), reviewSource(2)];
   const database = { async query(sql) {
-    if (sql.includes('CREATE TABLE')) return { rows: [] };
+    if (sql.includes('fika_schema_versions')) return { rows: [{ version: 1 }] };
     if (sql.includes('FROM timetable_sources AS sources')) return { rows: sources };
     throw Error('Unexpected publication query');
   } };
@@ -439,4 +439,40 @@ test('route decisions show distinct timetable and catalogue dates without duplic
   assert.match(html, /Catalogue entry effective date: 2026-08-20/);
   assert.equal((html.match(/action="[^\"]*timetables\/004901\/approve"/g) || []).length, 1);
   assert.doesNotMatch(html, /sections\/\d+\/approve/);
+});
+
+test('a signed approval queues the exact decision and returns a status page without running publication', async () => {
+  const calls=[];
+  const database={async query(sql,params){
+    calls.push({sql,params});
+    if(sql.includes('fika_schema_versions'))return {rows:[{version:1}]};
+    if(sql.includes('INSERT INTO timetable_publication_jobs'))return {rows:[{id:'42',status:'queued'}]};
+    throw Error('Approval must not execute timetable writes');
+  }};
+  const handler=createTimetableReliabilityHandlers({database,username:'reviewer',password:'secret'});
+  const snapshot='a'.repeat(64);
+  const res={set(){return this;},redirect(code,url){this.code=code;this.url=url;}};
+  await handler.approveTimetable({get:()=>`Basic ${Buffer.from('reviewer:secret').toString('base64')}`,
+    params:{number:'004901'},body:{snapshot,note:'Compared captured PDF',selected_version_id:'7',
+      token:actionToken('secret','timetable-approve',`004901:${snapshot}`)}},res);
+  assert.equal(res.code,303);assert.equal(res.url,'/admin/timetable-reliability/jobs/42');
+  const queued=calls.find(call=>call.sql.includes('INSERT INTO timetable_publication_jobs'));
+  assert.deepEqual(JSON.parse(queued.params[2]),{number:'004901',snapshot,reviewer:'reviewer',note:'Compared captured PDF',
+    withdraw:false,restore:false,selectedVersionId:'7'});
+  assert.ok(calls.every(call=>!call.sql.includes('CREATE TABLE')));
+});
+
+test('publishing status is authenticated, escapes errors and refreshes only unfinished jobs', async () => {
+  const auth=`Basic ${Buffer.from('reviewer:secret').toString('base64')}`;
+  let state='running',queries=0;
+  const handler=createTimetableReliabilityHandlers({username:'reviewer',password:'secret',database:{async query(){
+    queries++;return {rows:[{id:42,action:'source_approve',status:state,error:'<failed>',created_at:new Date(),return_url:'/admin/timetable-reliability'}]};
+  }}});
+  const response=()=>({headers:{},set(k,v){this.headers[k]=v;return this;},type(){return this;},status(v){this.code=v;return this;},send(v){this.body=v;return this;}});
+  const denied=response();await handler.job({get:()=>'',params:{id:'42'}},denied);
+  assert.equal(denied.code,401);assert.equal(queries,0);
+  const running=response();await handler.job({get:()=>auth,params:{id:'42'}},running);
+  assert.equal(running.headers.Refresh,'2');assert.match(running.body,/Publishing timetable/);
+  state='failed';const failed=response();await handler.job({get:()=>auth,params:{id:'42'}},failed);
+  assert.equal(failed.headers.Refresh,undefined);assert.match(failed.body,/&lt;failed&gt;/);
 });

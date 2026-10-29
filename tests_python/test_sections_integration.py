@@ -214,9 +214,8 @@ class SectionDatabaseTest(unittest.TestCase):
         self.stage([page('004901'),page('005001','BELLVILLE - KENRIDGE')])
         self.approve('004901');self.approve('005001')
         tafelsig=self.rows("SELECT t.* FROM trips t JOIN directions d ON d.id=t.direction_id JOIN routes r ON r.id=d.route_id WHERE r.code='0049'")
-        self.rows('CREATE TABLE api_response_cache(cache_key text PRIMARY KEY,route_id integer)')
-        self.rows("INSERT INTO api_response_cache SELECT code,id FROM routes")
-        self.rows("INSERT INTO api_response_cache VALUES ('schedules:v1',NULL)")
+        self.rows("INSERT INTO api_response_cache(cache_key,route_id,payload_kind,etag,payload_text,payload_gzip,payload_br) SELECT code,id,'test','test','[]','x'::bytea,'x'::bytea FROM routes")
+        self.rows("INSERT INTO api_response_cache(cache_key,route_id,payload_kind,etag,payload_text,payload_gzip,payload_br) VALUES ('schedules:v1',NULL,'schedules:v1','test','[]','x'::bytea,'x'::bytea)")
         self.stage([page('004901'),page('005001','BELLVILLE - KENRIDGE',raw='06:20a')])
         self.approve('005001')
         self.assertEqual([r['cache_key'] for r in self.rows('SELECT cache_key FROM api_response_cache')],['0049'])
@@ -293,9 +292,8 @@ class SectionDatabaseTest(unittest.TestCase):
     def test_automatic_time_update_is_atomic_auditable_and_idempotent(self):
         source, _ = self.stage([page('004901')]); self.decide()
         verified = self.rows('SELECT last_manually_verified_on FROM timetable_sections')[0]
-        self.rows('CREATE TABLE api_response_cache(cache_key text PRIMARY KEY,route_id integer)')
-        self.rows("INSERT INTO api_response_cache SELECT code,id FROM routes")
-        self.rows("INSERT INTO api_response_cache VALUES ('schedules:v1',NULL)")
+        self.rows("INSERT INTO api_response_cache(cache_key,route_id,payload_kind,etag,payload_text,payload_gzip,payload_br) SELECT code,id,'test','test','[]','x'::bytea,'x'::bytea FROM routes")
+        self.rows("INSERT INTO api_response_cache(cache_key,route_id,payload_kind,etag,payload_text,payload_gzip,payload_br) VALUES ('schedules:v1',NULL,'schedules:v1','test','[]','x'::bytea,'x'::bytea)")
         self.stage([page('004901', raw='06:05a')]); self.check_evidence(source)
         before = self.rows('SELECT * FROM trips')
         preview = self.automate(dry_run=True)
@@ -452,3 +450,41 @@ class SectionDatabaseTest(unittest.TestCase):
         self.node("const {runAutomaticReviews}=require('./lib/gabsTimetableWorkflow');await runAutomaticReviews(db,p);",
             {'runId': self.run_id, 'dryRun': False}, succeeds=False)
         self.assertEqual(self.rows('SELECT * FROM trips'), before)
+
+    def test_queued_timetable_publication_rechecks_snapshot_and_rebuilds_caches(self):
+        self.stage([page('004901')])
+        result = self.node("""const {loadTimetableStates}=require('./lib/gabsTimetableWorkflow');
+          const {reviewSnapshot}=require('./lib/gabsTimetablePolicy');
+          const {enqueuePublication,runNextPublication}=require('./lib/timetablePublicationJobs');
+          const {refreshNextCache}=require('./lib/timetableCacheRefresh');
+          const silent={log(){},error(){}};
+          const [state]=await loadTimetableStates(db,{number:'004901'});
+          const options={number:'004901',snapshot:reviewSnapshot(state.rows,state.control),reviewer:'integration',note:'Compared captured PDF'};
+          const job=await enqueuePublication(db,'timetable',options,'/admin/timetable-reliability');
+          await runNextPublication(db,{logger:silent});
+          const result=(await db.query('SELECT * FROM timetable_publication_jobs WHERE id=$1',[job.id])).rows[0];
+          if(result.status!=='succeeded')throw Error(result.error);
+          while(await refreshNextCache(db,silent)){}
+          if((await db.query('SELECT * FROM api_response_cache')).rowCount!==3)throw Error('missing refreshed caches');
+          const stale=await enqueuePublication(db,'timetable',{...options,note:'Old form'},'/admin/timetable-reliability');
+          await runNextPublication(db,{logger:silent});
+          const rejected=(await db.query('SELECT * FROM timetable_publication_jobs WHERE id=$1',[stale.id])).rows[0];
+          if(rejected.status!=='failed'||!rejected.error.includes('changed'))throw Error('stale snapshot accepted');""")
+        self.assertEqual(len(self.rows('SELECT * FROM trips')), 1)
+        self.assertEqual(len(self.rows("SELECT * FROM timetable_source_events WHERE event_type='timetable_approved'")), 1)
+
+    def test_review_page_loads_evidence_only_for_visible_routes_and_keeps_siblings(self):
+        for number in range(1, 13):
+            route = f'{number:04d}'
+            self.stage([page(route+'01', 'ATLANTIS - CAPE TOWN'), page(route+'02', 'CAPE TOWN - ATLANTIS')], key=route+'01')
+        self.node("""const {readAdminReviewPage}=require('./lib/timetableAdminPageData');
+          const calls=[];const database={query(sql,args){calls.push({sql,args});return db.query(sql,args)}};
+          const page=await readAdminReviewPage(database,{section_page:'2',per_page:'10'});
+          if(page.queues.sections.total!==12||page.queues.sections.items.length!==2)throw Error('incorrect route pagination');
+          if(page.queues.sections.items.some(r=>r.timetables.length!==2))throw Error('lost sibling direction');
+          const evidence=calls.find(c=>c.sql.includes('FROM timetable_sections sections'));
+          if(evidence.args[0].length!==4)throw Error('evidence loaded beyond the visible page');
+          const filtered=await readAdminReviewPage(db,{q:'001101'});
+          if(filtered.queues.sections.total!==1||filtered.queues.sections.items[0].timetables.length!==2)throw Error('search lost route siblings');
+          const direction=await readAdminReviewPage(db,{q:'CAPE TOWN - ATLANTIS'});
+          if(direction.queues.sections.total!==12)throw Error('direction search lost unprepared summaries');""")

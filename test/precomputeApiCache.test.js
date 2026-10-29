@@ -21,6 +21,8 @@ class RecordingClient {
       throw new Error('injected cache write failure');
     }
 
+    if (text.includes('fika_schema_versions')) return { rows: [{ version: 1 }] };
+    if (text.startsWith('SELECT id FROM routes')) return { rows: [{ id: 42 }] };
     if (text.startsWith('SELECT routes.id')) {
       return {
         rows: [{
@@ -59,9 +61,7 @@ class RecordingPool {
     return this.client;
   }
 
-  async query() {
-    throw new Error('precomputation must use its checked-out client');
-  }
+  async query(sql, params) { return this.client.query(sql, params); }
 }
 
 const silentLogger = { log() {} };
@@ -70,7 +70,7 @@ function queryIndex(events, predicate) {
   return events.findIndex((event) => event.type === 'query' && predicate(event));
 }
 
-test('cache precomputation locks publication before reads and writes, then commits and releases', async () => {
+test('cache precomputation locks each route independently and commits payloads before proceeding', async () => {
   const database = new RecordingPool();
 
   await main(database, silentLogger);
@@ -92,15 +92,16 @@ test('cache precomputation locks publication before reads and writes, then commi
     .filter(({ event }) => event.type === 'query'
       && /^INSERT INTO api_response_cache/.test(event.text))
     .map(({ index }) => index);
-  const commitIndex = queryIndex(events, ({ text }) => text === 'COMMIT');
-  const releaseIndex = events.findIndex((event) => event.type === 'release');
+  const commitIndex = events.findLastIndex(event => event.type === 'query' && event.text === 'COMMIT');
+  const releaseIndex = events.findLastIndex(event => event.type === 'release');
+  assert.equal(events.filter(event => event.type === 'query' && event.text === 'COMMIT').length, 3);
 
-  assert.equal(events[0].type, 'connect');
+  assert.ok(events.some(event => event.type === 'connect'));
   assert.ok(beginIndex > -1);
   assert.ok(lockIndex > beginIndex);
-  assert.equal(timetableReadIndexes.length, 2);
+  assert.equal(timetableReadIndexes.length, 3);
   assert.equal(cacheWriteIndexes.length, 3);
-  assert.ok(timetableReadIndexes.every((index) => lockIndex < index));
+  assert.ok(timetableReadIndexes.slice(1).every((index) => lockIndex < index));
   assert.ok(cacheWriteIndexes.every((index) => lockIndex < index));
   assert.ok(commitIndex > Math.max(...timetableReadIndexes, ...cacheWriteIndexes));
   assert.ok(releaseIndex > commitIndex);

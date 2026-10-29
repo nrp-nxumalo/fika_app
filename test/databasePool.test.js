@@ -51,3 +51,17 @@ test('a busy status connection does not consume the timetable pool', async () =>
     await Promise.all([main.end(), status.end()]);
   }
 });
+
+test('publishing and review work cannot occupy public timetable connections', async () => {
+  const { createTimetableAdminPool, createPublicationPool } = require('../lib/databasePool');
+  const main=createDatabasePool({env:{NODE_ENV:'production'},Client:TestClient,max:1});
+  const admin=createTimetableAdminPool({env:{},Client:TestClient});
+  const worker=createPublicationPool({env:{},Client:TestClient});
+  const held=[];
+  try {
+    held.push(await admin.connect(),await admin.connect(),await worker.connect());
+    assert.equal(admin.options.max,2);assert.equal(worker.options.max,1);
+    assert.deepEqual((await main.query('SELECT 1')).rows,[{ok:true}]);
+    assert.equal(main.waitingCount,0);
+  }finally{held.forEach(client=>client.release());await Promise.all([main.end(),admin.end(),worker.end()]);}
+});

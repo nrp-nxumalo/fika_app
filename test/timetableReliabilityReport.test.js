@@ -13,8 +13,8 @@ test('public reliability report exposes provenance and keeps accuracy claims sco
   let checkStatus = 'succeeded';
   const database = {
     async query(sql) {
-      if (sql.includes('CREATE TABLE IF NOT EXISTS timetable_sources')) {
-        return { rows: [] };
+      if (sql.includes('fika_schema_versions')) {
+        return { rows: [{ version: 1 }] };
       }
       if (sql.includes('FROM timetable_sources') && sql.includes('ORDER BY sources.operator')) {
         return { rows: [{

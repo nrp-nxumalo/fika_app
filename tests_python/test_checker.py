@@ -90,7 +90,7 @@ class FakeRepository:
         self.staged = []
         self.finished = None
 
-    def ensure_schema(self):
+    def assert_schema(self):
         pass
 
     def start_check_run(self):

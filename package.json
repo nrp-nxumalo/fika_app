@@ -8,9 +8,11 @@
     "sync:gsc": "node scripts/sync-search-console.js",
     "backfill:gsc": "node scripts/sync-search-console.js --start=2026-06-15",
     "precompute:api-cache": "node scripts/precompute-api-cache.js",
-    "start": "node scripts/precompute-api-cache.js --soft-fail && node server.js",
+    "start": "node server.js",
     "start:server": "node server.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "migrate:timetables": "node scripts/migrate-timetables.js",
+    "worker:timetables": "node scripts/timetable-publication-worker.js"
   },
   "keywords": [],
   "author": "",

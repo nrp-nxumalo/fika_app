@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
-const { createDatabasePool, createTimetableStatusPool } = require('./lib/databasePool');
+const { createDatabasePool, createTimetableStatusPool, createTimetableAdminPool } = require('./lib/databasePool');
+const { ensureTimetableReliabilitySchema } = require('./lib/timetableReliabilitySchema');
 const compression = require('compression');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -8,8 +9,6 @@ const fs = require('fs');
 const path = require('path');
 const {
   API_CACHE_PAYLOAD_KINDS,
-  API_RESPONSE_CACHE_INDEX_SQL,
-  API_RESPONSE_CACHE_TABLE_SQL,
   createEtag,
   getApiCacheKey,
 } = require('./lib/apiCache');
@@ -30,7 +29,6 @@ const {
 } = require('./lib/routePaths');
 const { resolveTimetableRoute } = require('./lib/routeResolver');
 const {
-  ensureRouteUrlAliasSchema,
   getRouteUrlAlias,
   saveRouteUrlAlias,
 } = require('./lib/routeUrlAliases');
@@ -92,9 +90,10 @@ if (IS_PRODUCTION) {
 
 const pool = createDatabasePool();
 const timetableStatusPool = createTimetableStatusPool();
+const timetableAdminPool = createTimetableAdminPool();
 
 const timetableReliabilityHandlers = createTimetableReliabilityHandlers({
-  database: pool,
+  database: timetableAdminPool,
   username: process.env.TIMETABLE_ADMIN_USERNAME || process.env.SEO_REPORT_USERNAME,
   password: process.env.TIMETABLE_ADMIN_PASSWORD || process.env.SEO_REPORT_PASSWORD,
 });
@@ -303,27 +302,7 @@ function handleQueryError(res, error) {
   res.status(500).json({ error: 'Internal Server Error' });
 }
 
-let apiResponseCacheReady = false;
-let apiResponseCacheSetupPromise = null;
 let apiResponseCacheWarningLogged = false;
-
-async function ensureApiResponseCacheTable() {
-  if (apiResponseCacheReady) {
-    return;
-  }
-
-  if (!apiResponseCacheSetupPromise) {
-    apiResponseCacheSetupPromise = (async () => {
-      await pool.query(API_RESPONSE_CACHE_TABLE_SQL);
-      await pool.query(API_RESPONSE_CACHE_INDEX_SQL);
-      apiResponseCacheReady = true;
-    })().finally(() => {
-      apiResponseCacheSetupPromise = null;
-    });
-  }
-
-  await apiResponseCacheSetupPromise;
-}
 
 async function getApiResponseCacheEntry(cacheKey) {
   const startedAt = Date.now();
@@ -337,8 +316,6 @@ async function getApiResponseCacheEntry(cacheKey) {
   }
 
   try {
-    await ensureApiResponseCacheTable();
-
     const { rows } = await pool.query(`
       SELECT
         etag,
@@ -1169,7 +1146,7 @@ let routeUrlAliasSchemaPromise = null;
 
 async function ensureRouteAliases() {
   if (!routeUrlAliasSchemaPromise) {
-    routeUrlAliasSchemaPromise = ensureRouteUrlAliasSchema(pool).catch((error) => {
+    routeUrlAliasSchemaPromise = pool.query('SELECT legacy_path FROM route_url_aliases LIMIT 0').catch((error) => {
       routeUrlAliasSchemaPromise = null;
       throw error;
     });
@@ -1761,7 +1738,7 @@ app.get('/api/timetable-status', createTimetableStatusHandler(timetableStatusPoo
 
 app.get('/api/reliability', async (req, res) => {
   try {
-    const report = await getPublicReliabilityReport(pool);
+    const report = await getPublicReliabilityReport(timetableAdminPool);
     res.set('Cache-Control', 'public, max-age=300, stale-while-revalidate=3600');
     res.json(report);
   } catch (error) {
@@ -1790,6 +1767,14 @@ app.get('/admin/search-performance', createSearchPerformanceHandler({
   password: process.env.SEO_REPORT_PASSWORD,
 }));
 
+app.use('/admin/timetable-reliability', (req, res, next) => {
+  const startedAt = Date.now();
+  res.once('finish', () => console.log(JSON.stringify({ event: 'timetable_admin_request',
+    method: req.method, path: req.path, status: res.statusCode, durationMs: Date.now() - startedAt,
+    adminWaitingCount: timetableAdminPool.waitingCount, publicWaitingCount: pool.waitingCount })));
+  next();
+});
+app.get('/admin/timetable-reliability/jobs/:id', timetableReliabilityHandlers.job);
 app.get('/admin/timetable-reliability', timetableReliabilityHandlers.report);
 app.get('/admin/timetable-reliability/section-versions/:id/comparison', timetableReliabilityHandlers.sectionComparison);
 app.post('/admin/timetable-reliability/sections/:id/approve', timetableReliabilityForm, timetableReliabilityHandlers.approveSection);
@@ -1994,6 +1979,7 @@ app.get('*', (req, res) => {
 });
 
 async function startServer() {
+  await ensureTimetableReliabilitySchema(timetableAdminPool);
   await ensureRouteAliases();
   return app.listen(PORT, () => {
     console.log(`Fika server listening on port ${PORT}`);

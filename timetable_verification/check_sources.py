@@ -77,7 +77,7 @@ class DailyChecker:
             self.log({"event": event, "run_id": run_id, **details})
 
     def run(self) -> Mapping[str, Any]:
-        self.repository.ensure_schema()
+        self.repository.assert_schema()
         if hasattr(self.repository, "migrate_gabs_sections"):
             self.repository.migrate_gabs_sections()
         run_id = self.repository.start_check_run()

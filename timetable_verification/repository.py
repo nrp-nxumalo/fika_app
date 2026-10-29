@@ -74,6 +74,14 @@ class TimetableRepository:
             with self.connection.cursor() as cursor:
                 cursor.execute(sql)
 
+    def assert_schema(self) -> None:
+        """Runtime paths only verify migrations; DDL belongs to deployment."""
+        with self.connection:
+            with self.connection.cursor() as cursor:
+                cursor.execute("SELECT version FROM fika_schema_versions WHERE name='timetable_publication' AND version>=1")
+                if not cursor.fetchone():
+                    raise RuntimeError('Run npm run migrate:timetables before the checker.')
+
     def migrate_gabs_sections(self):
         from .migrate_sections import migrate_gabs_sections
         return migrate_gabs_sections(self)

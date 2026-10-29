@@ -34,3 +34,15 @@ services:
         sync: false
       - key: GSC_SERVICE_ACCOUNT_JSON
         sync: false
+
+  - type: worker
+    name: fika-timetable-publication
+    runtime: node
+    buildCommand: npm ci --omit=dev
+    preDeployCommand: npm run migrate:timetables
+    startCommand: npm run worker:timetables
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false

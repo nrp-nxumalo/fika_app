@@ -283,3 +283,57 @@ ALTER TABLE timetable_section_versions ADD COLUMN IF NOT EXISTS policy_summary j
 ALTER TABLE timetable_section_versions ADD COLUMN IF NOT EXISTS review_decision jsonb NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE timetable_section_versions ADD COLUMN IF NOT EXISTS approval_method text CHECK (approval_method IN ('manual','automatic'));
 ALTER TABLE timetable_section_versions ADD COLUMN IF NOT EXISTS approval_policy_version text;
+
+-- Durable manual decisions. The worker commits the publication and terminal job
+-- state in the same transaction, so an interrupted process cannot publish twice.
+CREATE TABLE IF NOT EXISTS timetable_publication_jobs (
+  id bigserial PRIMARY KEY,
+  request_key text NOT NULL UNIQUE,
+  action text NOT NULL CHECK (action IN ('timetable','section_approve','section_withdraw','source_approve','source_withdraw','bulk_approve')),
+  payload jsonb NOT NULL,
+  return_url text NOT NULL,
+  status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','running','succeeded','failed')),
+  attempts integer NOT NULL DEFAULT 0,
+  available_at timestamptz NOT NULL DEFAULT now(),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  started_at timestamptz,
+  finished_at timestamptz,
+  error text,
+  result jsonb
+);
+CREATE INDEX IF NOT EXISTS idx_publication_jobs_pending
+  ON timetable_publication_jobs(available_at,id) WHERE status IN ('queued','running');
+
+CREATE TABLE IF NOT EXISTS api_response_cache (
+  cache_key text PRIMARY KEY, payload_kind text NOT NULL, route_id integer,
+  etag text NOT NULL, payload_text text NOT NULL, payload_gzip bytea NOT NULL,
+  payload_br bytea NOT NULL, updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_api_response_cache_kind_route ON api_response_cache(payload_kind,route_id);
+-- A route_id of zero represents the shared route list. Invalidations and this
+-- outbox are written atomically with timetable changes, including cron updates.
+CREATE TABLE IF NOT EXISTS timetable_cache_refreshes (
+  route_id integer PRIMARY KEY CHECK (route_id>=0),
+  requested_at timestamptz NOT NULL DEFAULT now(),
+  available_at timestamptz NOT NULL DEFAULT now(),
+  attempts integer NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_publication_stops_name ON stops(agency,name,id);
+-- Existing installations may already have covering indexes with these leading
+-- columns. Avoid adding a redundant index to every timetable write.
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_index i JOIN pg_attribute a
+    ON a.attrelid=i.indrelid AND a.attnum=i.indkey[0]
+    WHERE i.indrelid='stop_times'::regclass AND a.attname='trip_id' AND i.indisvalid AND i.indpred IS NULL) THEN
+    CREATE INDEX idx_publication_stop_times_trip ON stop_times(trip_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_index i JOIN pg_attribute a
+    ON a.attrelid=i.indrelid AND a.attnum=i.indkey[0]
+    WHERE i.indrelid='trips'::regclass AND a.attname='direction_id' AND i.indisvalid AND i.indpred IS NULL) THEN
+    CREATE INDEX idx_publication_trips_direction ON trips(direction_id);
+  END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS fika_schema_versions (name text PRIMARY KEY,version integer NOT NULL);
+INSERT INTO fika_schema_versions(name,version) VALUES ('timetable_publication',1)
+  ON CONFLICT(name) DO UPDATE SET version=EXCLUDED.version;
