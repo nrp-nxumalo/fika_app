@@ -530,6 +530,7 @@ function App() {
   const [currentPath, setCurrentPath] = useState(getCurrentPath);
   const routeViewSequence = useRef(0);
   const failedRouteLocators = useRef(new Set());
+  const refreshTimetableRef = useRef(null);
 
   const clearTimetableSelection = ({ showWorkspace = false, message = '' } = {}) => {
     setRoute(null);
@@ -756,24 +757,27 @@ function App() {
   useEffect(() => {
     let ignore = false;
     let latestRequest = 0;
+    let inFlight = null;
+    let hasDisplayedTimetable = false;
 
     const fetchScheduleTimes = async () => {
       const request = ++latestRequest;
       const isOutdated = () => ignore || request !== latestRequest;
       const cachedTimetable = await getCachedTimetable(route.id);
-      let hasUsableCachedTimetable = false;
+      let hasUsableCachedTimetable = hasDisplayedTimetable;
 
       if (isOutdated()) {
-        return;
+        return false;
       }
 
       setRouteSavedOffline(Boolean(cachedTimetable?.saved));
 
-      if (cachedTimetable?.data) {
+      if (!hasDisplayedTimetable && cachedTimetable?.data) {
         const cachedTimetablePayload = normalizeTimetablePayload(cachedTimetable.data);
 
         if (hasTimetableDirections(cachedTimetablePayload)) {
           hasUsableCachedTimetable = true;
+          hasDisplayedTimetable = true;
           setTimetablePayload(cachedTimetablePayload);
           setScheduleData(buildScheduleData(cachedTimetablePayload));
           setTimetableDataSource('cache');
@@ -784,17 +788,17 @@ function App() {
           setTimetablePayload(null);
           setScheduleData(null);
         }
-      } else {
+      } else if (!hasDisplayedTimetable) {
         setTimetablePayload(null);
         setScheduleData(null);
       }
 
       if (navigator.onLine === false && hasUsableCachedTimetable) {
-        return;
+        return false;
       }
 
       try {
-        if (!cachedTimetable?.data) {
+        if (!hasUsableCachedTimetable) {
           setLoadingTimes(true);
         }
 
@@ -811,7 +815,7 @@ function App() {
         const normalizedPayload = normalizeTimetablePayload(data);
 
         if (isOutdated()) {
-          return;
+          return false;
         }
 
         if (!hasTimetableDirections(normalizedPayload)) {
@@ -826,9 +830,10 @@ function App() {
               failure_type: 'invalid_payload',
             });
           }
-          return;
+          return false;
         }
 
+        hasDisplayedTimetable = true;
         setTimetablePayload(normalizedPayload);
         setScheduleData(buildScheduleData(normalizedPayload));
         setTimetableDataSource(networkDataSource);
@@ -840,6 +845,7 @@ function App() {
         );
         const refreshedTimetable = await getCachedTimetable(route.id);
         if (!isOutdated()) setRouteSavedOffline(Boolean(refreshedTimetable?.saved));
+        return !isOutdated();
       } catch (error) {
         console.error('Error fetching timetable:', error);
 
@@ -852,6 +858,7 @@ function App() {
             failure_type: 'network',
           });
         }
+        return false;
       } finally {
         if (!isOutdated()) {
           setLoadingTimes(false);
@@ -859,19 +866,26 @@ function App() {
       }
     };
 
+    // Route opening, reconnect and notice polling share one request.
+    const refreshScheduleTimes = () => {
+      if (!inFlight) inFlight = fetchScheduleTimes().finally(() => { inFlight = null; });
+      return inFlight;
+    };
+    refreshTimetableRef.current = route ? refreshScheduleTimes : null;
     if (route) {
       setLoadingTimes(true);
       setScheduleData(null);
       setTimetablePayload(null);
       setTimetableDataSource('');
       setTimetableMessage('');
-      fetchScheduleTimes();
+      refreshScheduleTimes();
     }
 
-    const reconnect = () => { if (route) fetchScheduleTimes(); };
+    const reconnect = () => { if (route) refreshScheduleTimes(); };
     window.addEventListener('online', reconnect);
     return () => {
       ignore = true;
+      refreshTimetableRef.current = null;
       window.removeEventListener('online', reconnect);
     };
   }, [route]);
@@ -898,7 +912,7 @@ function App() {
     const names = Object.keys(scheduleData || {});
     if (names.length) setSelectedDirection((current) => names.includes(current) ? current : names[0]);
   }, [scheduleData]);
-  const statusState = useTimetableStatus(route ? `${route.agency}:${route.code}` : '', fetchApiJson);
+  const statusState = useTimetableStatus(route ? `${route.agency}:${route.code}` : '', fetchApiJson, refreshTimetableRef);
   const decoratedSchedules = useMemo(() => schedules.map((schedule) => ({
     ...schedule,
     timetableStatus: getRouteStatus(statusState.report, schedule, statusState),

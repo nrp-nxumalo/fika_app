@@ -15,6 +15,8 @@ test('status SQL reads exact published provenance and projected legacy changes i
   try {
     await db.query('BEGIN');
     await db.query('SET LOCAL search_path=pg_temp');
+    await db.query("SET LOCAL statement_timeout='5s'");
+    await db.query('SET LOCAL jit=off');
     await db.query(`
       CREATE TEMP TABLE routes(id bigint PRIMARY KEY,agency text,code text);
       CREATE TEMP TABLE directions(id bigint PRIMARY KEY,route_id bigint,direction text,code text,
@@ -72,7 +74,13 @@ test('status SQL reads exact published provenance and projected legacy changes i
     // Multiple trips sharing a published contribution collapse before joining
     // document/section JSON. Direction provenance still supplies null trip IDs.
     await db.query(`INSERT INTO trips(id,direction_id,monday,tuesday)
-      SELECT id,2,true,true FROM generate_series(1000,2000) id`);
+      SELECT id,2,true,true FROM generate_series(1000,31000) id`);
+    // Pending documents for unpublished routes must not be parsed. A large
+    // registry used to trigger a second scan of every trip for this work.
+    await db.query(`INSERT INTO timetable_sources
+      SELECT id,id::text,false,'changed_review_required',id FROM generate_series(2000,3000) id;
+      INSERT INTO timetable_source_versions(id,source_id,extraction,review_status)
+      SELECT id,id,'{"routes":"not an array"}'::jsonb,'pending' FROM generate_series(2000,3000) id;`);
     const expanded = await getTimetableStatus(db, { now: new Date('2026-10-14T12:00:00Z') });
     assert.equal(expanded.routes.length, 2);
     const myciti = expanded.routes.find(route => route.agency === 'MyCiti');

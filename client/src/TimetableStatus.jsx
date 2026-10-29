@@ -15,6 +15,12 @@ export const formatNoticeDate = (value) => new Intl.DateTimeFormat('en-ZA', {
 
 const directionKey = (value) => String(value || '').replace(/^to\s+/i, '').trim().toLowerCase().replace(/\s+/g, ' ');
 const validDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || '') && !Number.isNaN(Date.parse(`${value}T12:00:00Z`));
+// Evidence PDF URLs identify a captured revision and can disappear when the
+// operator replaces it. Passenger notices should lead to the current catalogue.
+const OPERATOR_TIMETABLE_URLS = {
+  GABS: 'https://www.gabs.co.za/Timetable.aspx',
+  MyCiti: 'https://www.myciti.org.za/en/timetables/timetable-downloads/',
+};
 
 export const getRouteStatus = (report, route, { direction, serviceDay, today = capeTownDate(), cached = false } = {}) => {
   if (!route || !Array.isArray(report?.routes)) return null;
@@ -31,10 +37,11 @@ export const getRouteStatus = (report, route, { direction, serviceDay, today = c
   const kind = expired.length ? 'expired' : futureOnly ? 'upcoming' : 'pending';
   const label = kind === 'expired' ? 'Timetable needs updating'
     : kind === 'upcoming' ? `Update due ${formatNoticeDate(dueDate)}` : 'Update pending';
-  return { kind, label, expired, pending, dueDate, cached, checkedAt: report.checked_at };
+  return { kind, label, expired, pending, dueDate, cached, checkedAt: report.checked_at,
+    operatorTimetableUrl: OPERATOR_TIMETABLE_URLS[route.agency] || null };
 };
 
-export function useTimetableStatus(routeKey, fetchJson) {
+export function useTimetableStatus(routeKey, fetchJson, refreshTimetableRef) {
   const [status, setStatus] = useState({ report: null, cached: true, today: capeTownDate() });
   useEffect(() => {
     let active = true;
@@ -50,8 +57,12 @@ export function useTimetableStatus(routeKey, fetchJson) {
         return;
       }
       try {
+        // Refresh the displayed times first. Otherwise a publication can clear
+        // its notice while an already-open page still shows the previous trips.
         const report = await fetchJson('/api/timetable-status', 'Unable to check timetable updates');
         if (!Array.isArray(report?.routes) || !report.checked_at) throw new Error('Invalid status response');
+        const timetableReady = await refreshTimetableRef?.current?.();
+        if (timetableReady === false) throw new Error('Displayed timetable could not be refreshed');
         if (!active || currentRequest !== request) return;
         fetched = true;
         setStatus({ report, cached: false, today: capeTownDate() });
@@ -74,15 +85,13 @@ export function useTimetableStatus(routeKey, fetchJson) {
       window.removeEventListener('online', refresh);
       window.removeEventListener('offline', offline);
     };
-  }, [routeKey, fetchJson]);
+  }, [routeKey, fetchJson, refreshTimetableRef]);
   return status;
 }
 
 export default function TimetableStatusNotice({ status }) {
   if (!status) return null;
   const endDates = [...new Set(status.expired.map((item) => item.valid_until))].sort();
-  const sourceLinks = [...new Set([...status.expired, ...status.pending].map((item) => item.official_source_url || item.pending_source_url))]
-    .filter((url) => /^https?:\/\//i.test(url || ''));
   return (
     <aside className={`timetable-status-notice status-${status.kind}`} aria-label="Timetable update">
       <strong>{status.label}</strong>
@@ -91,7 +100,7 @@ export default function TimetableStatusNotice({ status }) {
         ? `An update is due from ${formatNoticeDate(status.dueDate)}. Showing the previous timetable until the update is published on Fika.`
         : 'A newer timetable is being checked. Showing the previous timetable.'}</p>}
       {status.cached && <p className="status-last-known">Last-known update information{status.checkedAt && !Number.isNaN(Date.parse(status.checkedAt)) ? ` · checked ${formatNoticeDate(capeTownDate(new Date(status.checkedAt)))}` : ''}. Connect to refresh.</p>}
-      {sourceLinks.length > 0 && <div className="status-source-links">{sourceLinks.map((url, index) => <a key={url} href={url} target="_blank" rel="noopener noreferrer">Operator timetable{sourceLinks.length > 1 ? ` ${index + 1}` : ''}</a>)}</div>}
+      {status.operatorTimetableUrl && <div className="status-source-links"><a href={status.operatorTimetableUrl} target="_blank" rel="noopener noreferrer">Operator timetables</a></div>}
     </aside>
   );
 }

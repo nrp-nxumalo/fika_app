@@ -144,7 +144,7 @@ test('status reads only compact evidence and never initializes schema or timetab
   const queries = [];
   const result = await getTimetableStatus({ async query(sql) { queries.push(sql); return { rows: [] }; } }, { now });
   assert.deepEqual(result, { checked_at: now.toISOString(), routes: [] });
-  assert.equal(queries.length, 3);
+  assert.equal(queries.length, 1); // No published provenance means no evidence scans.
   for (const sql of queries) assert.doesNotMatch(sql, /CREATE|INSERT|UPDATE|DELETE|pdf_bytes|timetable_audit|api_response_cache/);
   assert.equal(STATUS_CACHE_CONTROL, 'public, max-age=300, must-revalidate');
 });
@@ -174,19 +174,19 @@ test('simultaneous status requests share one refresh and stop using it at five m
   } }, { clock: () => time });
   const responses = Array.from({ length: 40 }, statusResponse);
   await Promise.all(responses.map(response => handler({}, response)));
-  assert.equal(calls, 3);
+  assert.equal(calls, 1);
   assert.ok(responses.every(response => response.body === responses[0].body));
   assert.equal(responses[0].headers['Cache-Control'], STATUS_CACHE_CONTROL);
   time += 120_000;
   const cached = statusResponse();
   await handler({}, cached);
-  assert.equal(calls, 3);
+  assert.equal(calls, 1);
   assert.equal(cached.body.checked_at, now.toISOString());
   assert.equal(cached.headers['Cache-Control'], 'public, max-age=180, must-revalidate');
   time += 180_000;
   const refreshed = statusResponse();
   await handler({}, refreshed);
-  assert.equal(calls, 6);
+  assert.equal(calls, 2);
   assert.notEqual(refreshed.body, cached.body);
 });
 
@@ -203,24 +203,25 @@ test('failed refreshes stop queries, share a short cooldown, and recover without
   fail = true;
   const responses = Array.from({ length: 20 }, statusResponse);
   await Promise.all(responses.map(response => handler({}, response)));
-  assert.equal(calls, 4); // Only the first query ran, with no abandoned siblings.
+  assert.equal(calls, 2); // Only the first query ran, with no abandoned siblings.
   assert.equal(logs.length, 1);
+  assert.equal(JSON.parse(logs[0]).query, 'published');
   assert.ok(responses.every(response => response.code === 503 && response.headers['Cache-Control'] === 'no-store'));
   await handler({}, statusResponse());
-  assert.equal(calls, 4);
+  assert.equal(calls, 2);
   time += 5000;
   fail = false;
   const recovered = statusResponse();
   await handler({}, recovered);
   assert.equal(recovered.code, 200);
-  assert.equal(calls, 7);
+  assert.equal(calls, 3);
 });
 
 test('server and HTTP caches expire at Johannesburg midnight', async () => {
   let time = Date.parse('2026-10-14T21:59:59Z'), calls = 0;
   const handler = createTimetableStatusHandler({ async query(sql) {
     calls += 1;
-    return { rows: sql.includes('WITH published AS') ? [published()] : [] };
+    return { rows: sql.includes('WITH published AS') ? [published({ section_mode: true })] : [] };
   } }, { clock: () => time });
   const before = statusResponse();
   await handler({}, before);
@@ -230,5 +231,22 @@ test('server and HTTP caches expire at Johannesburg midnight', async () => {
   const after = statusResponse();
   await handler({}, after);
   assert.equal(after.body.routes[0].directions[0].expired, true);
-  assert.equal(calls, 6);
+  assert.equal(calls, 4);
+});
+
+test('status evidence queries reuse distinct published versions and report the failing stage', async () => {
+  const queries = [];
+  const live = published({ section_mode: true });
+  const legacy = published({ source_id: 6, source_version_id: 60, section_mode: false, section_version_id: null });
+  await getTimetableStatus({ async query(sql, values) {
+    queries.push({ sql, values });
+    return { rows: queries.length === 1 ? [live, legacy, legacy] : [] };
+  } });
+  assert.deepEqual(queries[1].values, [['004901']]);
+  assert.deepEqual(JSON.parse(queries[2].values[0]), [{ source_id: '6', version_id: '60' }]);
+  assert.doesNotMatch(queries[2].sql, /JOIN trips|JOIN directions/);
+  await assert.rejects(getTimetableStatus({ async query(sql) {
+    if (sql.includes('WITH published AS')) return { rows: [legacy] };
+    throw Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+  } }), error => error.code === '57014' && error.statusQuery === 'legacy' && error.statusQueryDurationMs >= 0);
 });

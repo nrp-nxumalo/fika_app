@@ -46,7 +46,9 @@ Offline access requires at least one successful online visit on the browser. Rem
 
 Route discovery defaults to all operators, with 24 compact route tiles and **Show more routes** adding another 24. Timetables default to today's weekday in Africa/Johannesburg; Public Holiday remains an explicit selection. Trip rows start collapsed and support keyboard expansion and independent comparison. Boarding-stop names are merged across service patterns, and only published endpoint times are used for durations. Overnight times show their day offset, while untimed via points do not imply boarding availability.
 
-Status notices are cached separately from timetable times and identified as last-known information when offline. Reconnecting refreshes the current route and its notices. Existing saved timetable records and timetable API formats remain compatible.
+Status notices are cached separately from timetable times and identified as last-known information when offline or refresh fails. Online pages check notices every five minutes and refresh the displayed route's times before accepting the new notice state; reconnecting also refreshes both. Pending notices clear when the relevant changed revision has been published, but an expiry warning remains if the published evidence still has an elapsed end date. No warning is not a guarantee of current operator service: unknown validity dates and failed source checks do not establish expiry. Operator links open the current timetable catalogue rather than a captured PDF URL that the operator may have removed. Existing saved timetable records and timetable API formats remain compatible.
+
+The status endpoint scopes section/document evidence to the versions referenced by live trips, reuses those references instead of scanning all trips again, and materializes the document set before expanding JSON. A `timetable_status_unavailable` log includes `query` (`published`, `sections`, or `legacy`) and `queryDurationMs` to identify any remaining production timeout without increasing the five-second statement limit.
 
 ## Timetable source verification
 

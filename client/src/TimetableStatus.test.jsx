@@ -35,7 +35,21 @@ test('combines expiry and a pending update and identifies last-known notices', (
   expect(screen.getByText(/published timetable end date was 14 Oct 2026/)).toBeInTheDocument();
   expect(screen.getByText(/update is due from 19 Oct 2026/)).toBeInTheDocument();
   expect(screen.getByText(/Last-known update information/)).toBeInTheDocument();
-  expect(screen.getByRole('link', { name: 'Operator timetable' })).toHaveAttribute('href', contribution.official_source_url);
+  expect(screen.getByRole('link', { name: 'Operator timetables' })).toHaveAttribute('href', 'https://www.gabs.co.za/Timetable.aspx');
+});
+
+test.each([
+  ['GABS', 'https://www.gabs.co.za/Timetable.aspx'],
+  ['MyCiti', 'https://www.myciti.org.za/en/timetables/timetable-downloads/'],
+])('uses the current %s catalogue even when cached notices contain retired PDF links', (agency, url) => {
+  const selectedRoute = { ...route, agency };
+  const cachedReport = { ...report, routes: [{ ...selectedRoute, directions: [
+    { ...contribution, official_source_url: 'https://example.com/retired.pdf', pending_source_url: 'https://example.com/new.pdf' },
+    { ...contribution, official_source_url: null, pending_source_url: null },
+  ] }] };
+  render(<TimetableStatusNotice status={getRouteStatus(cachedReport, selectedRoute, { cached: true, today: '2026-10-15' })} />);
+  expect(screen.getAllByRole('link')).toHaveLength(1);
+  expect(screen.getByRole('link', { name: 'Operator timetables' })).toHaveAttribute('href', url);
 });
 
 test('unknown dates and nonpending evidence do not create a warning', () => {
@@ -58,4 +72,25 @@ test('cached status survives a network failure and refreshes independently on re
   expect(saveTimetableStatusToCache).toHaveBeenCalledWith(current);
   rerender({ routeKey: 'MyCiti:214A' });
   await waitFor(() => expect(fetchJson).toHaveBeenCalledTimes(3));
+});
+
+test('does not clear a pending notice until displayed times refresh, and retains it on failure', async () => {
+  const current = { checked_at: '2026-10-15T03:00:00Z', routes: [] };
+  const fetchJson = jest.fn().mockResolvedValue(report);
+  const refreshTimetableRef = { current: jest.fn().mockResolvedValue(true) };
+  const { result } = renderHook(() => useTimetableStatus('GABS:0098', fetchJson, refreshTimetableRef));
+  await waitFor(() => expect(result.current.report).toEqual(report));
+  fetchJson.mockResolvedValue(current);
+  refreshTimetableRef.current.mockResolvedValueOnce(false);
+  act(() => window.dispatchEvent(new Event('online')));
+  await waitFor(() => expect(result.current.cached).toBe(true));
+  expect(result.current.report).toEqual(report);
+  let complete;
+  refreshTimetableRef.current.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+  act(() => window.dispatchEvent(new Event('online')));
+  await waitFor(() => expect(complete).toBeDefined());
+  expect(result.current.report).toEqual(report);
+  await act(async () => complete(true));
+  await waitFor(() => expect(result.current.report).toEqual(current));
+  expect(result.current.cached).toBe(false);
 });

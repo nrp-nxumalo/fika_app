@@ -51,6 +51,39 @@ beforeEach(() => {
   });
 });
 
+test('an open route refreshes its trips before clearing a published update notice', async () => {
+  jest.useFakeTimers();
+  try {
+    window.history.replaceState({}, '', getTimetablePath(route));
+    let published = false;
+    let releaseTimes;
+    const updatedPayload = payload(route);
+    updatedPayload.directions[0].rows[0].stop_times[0].arrival = '07:10:00';
+    const response = data => ({ ok: true, headers: { get: () => 'application/json' }, json: async () => data });
+    global.fetch.mockImplementation(async url => {
+      const pathname = new URL(url, 'http://localhost').pathname;
+      if (pathname === '/schedules') return response(schedules);
+      if (pathname === '/api/timetable-status') return response({ checked_at: new Date().toISOString(), routes: published ? [] : [{
+        agency: route.agency, code: route.code, directions: [{ name: route.direction_1,
+          service_days: ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'], pending: true }],
+      }] });
+      if (published) return new Promise(resolve => { releaseTimes = () => resolve(response(updatedPayload)); });
+      return response(payload(route));
+    });
+    render(<App />);
+    await screen.findByRole('complementary', { name: 'Timetable update' });
+    expect(screen.getByRole('button', { name: /Show stops/ })).toHaveTextContent('07:00');
+    published = true;
+    await act(async () => { jest.advanceTimersByTime(5 * 60 * 1000); });
+    await waitFor(() => expect(releaseTimes).toBeDefined());
+    expect(screen.getByRole('complementary', { name: 'Timetable update' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Show stops/ })).toHaveTextContent('07:00');
+    await act(async () => { releaseTimes(); });
+    await waitFor(() => expect(screen.getByRole('button', { name: /Show stops/ })).toHaveTextContent('07:10'));
+    expect(screen.queryByRole('complementary', { name: 'Timetable update' })).not.toBeInTheDocument();
+  } finally { jest.useRealTimers(); }
+});
+
 test('home defaults to all operators, shares search with tiles and reveals routes in batches', async () => {
   schedules = Array.from({ length: 30 }, (_, index) => ({ ...route, id: index + 1, code: String(index + 1), name: `Area ${index + 1} - Cape Town` }));
   const { container } = render(<App />);
